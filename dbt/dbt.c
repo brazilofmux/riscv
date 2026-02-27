@@ -1026,6 +1026,25 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
         rv32_decode(word, &insn);
         count++;
 
+        /* LUI+ADDI / AUIPC+ADDI fusion: collapse the two-instruction
+         * "load constant" or "load address" idiom into a single mov. */
+        if ((insn.opcode == OP_LUI || insn.opcode == OP_AUIPC)
+            && insn.rd && pc + 8 <= dbt->bin->code_end) {
+            uint32_t nw;
+            memcpy(&nw, dbt->bin->memory + pc + 4, 4);
+            rv32_insn_t ni;
+            rv32_decode(nw, &ni);
+            if (ni.opcode == OP_IMM && ni.funct3 == ALU_ADDI
+                && ni.rs1 == insn.rd && ni.rd == insn.rd) {
+                uint32_t base = (insn.opcode == OP_AUIPC) ? pc : 0;
+                int rd = rc_write(&e, &rc, insn.rd);
+                emit_mov_r32_imm32(&e, rd, base + (uint32_t)(insn.imm + ni.imm));
+                pc += 8;
+                count++;
+                continue;
+            }
+        }
+
         switch (insn.opcode) {
 
         case OP_LUI: case OP_AUIPC: case OP_LOAD: case OP_STORE:
