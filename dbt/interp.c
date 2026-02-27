@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 /* Memory access helpers — little-endian */
 static inline uint32_t mem_read32(rv32_binary_t *bin, uint32_t addr) {
@@ -75,23 +77,66 @@ static int handle_ecall(rv32_state_t *s, rv32_binary_t *bin) {
                 s->x[10] = (uint32_t)-1;
                 break;
             }
-            FILE *out = (fd == 2) ? stderr : stdout;
-            size_t written = fwrite(bin->memory + buf, 1, len, out);
-            s->x[10] = (uint32_t)written;
+            ssize_t written = write(fd, bin->memory + buf, len);
+            s->x[10] = (uint32_t)(int32_t)written;
         }
         break;
 
     case 63:  /* read(fd, buf, len) */
         {
+            uint32_t fd  = s->x[10];
             uint32_t buf = s->x[11];
             uint32_t len = s->x[12];
             if (buf + len > bin->memory_size) {
                 s->x[10] = (uint32_t)-1;
                 break;
             }
-            size_t nread = fread(bin->memory + buf, 1, len, stdin);
-            s->x[10] = (uint32_t)nread;
+            ssize_t nread = read(fd, bin->memory + buf, len);
+            s->x[10] = (uint32_t)(int32_t)nread;
         }
+        break;
+
+    case 56:  /* openat(dirfd, pathname, flags, mode) */
+        {
+            int32_t dirfd = (int32_t)s->x[10];
+            uint32_t path_addr = s->x[11];
+            int flags = (int)s->x[12];
+            int mode = (int)s->x[13];
+            if (path_addr >= bin->memory_size) {
+                s->x[10] = (uint32_t)-1;
+                break;
+            }
+            const char *pathname = (const char *)(bin->memory + path_addr);
+            int result = openat(dirfd, pathname, flags, mode);
+            s->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
+    case 57:  /* close(fd) */
+        {
+            int fd = (int)s->x[10];
+            if (fd <= 2) { s->x[10] = 0; break; }
+            int result = close(fd);
+            s->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
+    case 62:  /* lseek(fd, offset, whence) */
+        {
+            int fd = (int)s->x[10];
+            off_t offset = (off_t)(int32_t)s->x[11];
+            int whence = (int)s->x[12];
+            off_t result = lseek(fd, offset, whence);
+            s->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
+    case 80:  /* fstat — stub */
+        s->x[10] = (uint32_t)-1;
+        break;
+
+    case 214: /* brk — not needed */
+        s->x[10] = 0;
         break;
 
     default:

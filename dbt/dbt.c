@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 /* Max guest instructions per translated block */
 #define MAX_BLOCK_INSNS  64
@@ -50,23 +52,67 @@ static int handle_ecall(dbt_state_t *dbt) {
                 ctx->x[10] = (uint32_t)-1;
                 break;
             }
-            FILE *out = (fd == 2) ? stderr : stdout;
-            size_t written = fwrite(dbt->bin->memory + buf, 1, len, out);
-            ctx->x[10] = (uint32_t)written;
+            ssize_t written = write(fd, dbt->bin->memory + buf, len);
+            ctx->x[10] = (uint32_t)(int32_t)written;
         }
         break;
 
     case 63:  /* read(fd, buf, len) */
         {
+            uint32_t fd  = ctx->x[10];
             uint32_t buf = ctx->x[11];
             uint32_t len = ctx->x[12];
             if (buf + len > dbt->bin->memory_size) {
                 ctx->x[10] = (uint32_t)-1;
                 break;
             }
-            size_t nread = fread(dbt->bin->memory + buf, 1, len, stdin);
-            ctx->x[10] = (uint32_t)nread;
+            ssize_t nread = read(fd, dbt->bin->memory + buf, len);
+            ctx->x[10] = (uint32_t)(int32_t)nread;
         }
+        break;
+
+    case 56:  /* openat(dirfd, pathname, flags, mode) */
+        {
+            int32_t dirfd = (int32_t)ctx->x[10];
+            uint32_t path_addr = ctx->x[11];
+            int flags = (int)ctx->x[12];
+            int mode = (int)ctx->x[13];
+            if (path_addr >= dbt->bin->memory_size) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            const char *pathname = (const char *)(dbt->bin->memory + path_addr);
+            int result = openat(dirfd, pathname, flags, mode);
+            ctx->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
+    case 57:  /* close(fd) */
+        {
+            int fd = (int)ctx->x[10];
+            /* Don't close stdin/stdout/stderr */
+            if (fd <= 2) { ctx->x[10] = 0; break; }
+            int result = close(fd);
+            ctx->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
+    case 62:  /* lseek(fd, offset, whence) */
+        {
+            int fd = (int)ctx->x[10];
+            off_t offset = (off_t)(int32_t)ctx->x[11];
+            int whence = (int)ctx->x[12];
+            off_t result = lseek(fd, offset, whence);
+            ctx->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
+    case 80:  /* fstat — stub, return -1 */
+        ctx->x[10] = (uint32_t)-1;
+        break;
+
+    case 214: /* brk — not needed, return 0 */
+        ctx->x[10] = 0;
         break;
 
     default:

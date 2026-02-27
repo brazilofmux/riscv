@@ -36,4 +36,5 @@ SECTIONS
 
     _end = .;
     __heap_start = .;
+    __heap_end = ORIGIN(DATA) + LENGTH(DATA);
 }

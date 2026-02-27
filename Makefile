@@ -3,7 +3,7 @@ CFLAGS = -Wall -Wextra -O2 -g
 LDFLAGS =
 
 # Cross-compiler for guest programs
-RISCV_CC = riscv32-unknown-elf-gcc
+RISCV_CC = riscv64-unknown-elf-gcc
 RISCV_CFLAGS = -march=rv32im -mabi=ilp32 -nostdlib -O2
 
 .PHONY: all clean dbt runtime
