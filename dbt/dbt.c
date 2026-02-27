@@ -143,7 +143,7 @@ static void emit_exit_chained(emit_t *e, uint32_t target_pc) {
  *   ret
  */
 static void emit_exit_indirect(emit_t *e) {
-    /* Store target PC */
+    /* Store target PC (always needed for ecall check) */
     emit_byte(e, 0x89);  /* mov [rbx+disp32], eax */
     emit_byte(e, modrm(0x02, X64_RAX, X64_RBX));
     emit_u32(e, CTX_NEXT_PC_OFF);
@@ -975,8 +975,16 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                     if (rd == rs1) {
                         if (insn.funct7 & 0x20) emit_sub_rr(&e, rd, rs2);
                         else emit_add_rr(&e, rd, rs2);
-                    } else if (rd == rs2 && !(insn.funct7 & 0x20)) {
-                        emit_add_rr(&e, rd, rs1); /* commutative */
+                    } else if (rd == rs2) {
+                        if (insn.funct7 & 0x20) {
+                            /* SUB with rd == rs2: can't mov rd,rs1 then sub rd,rs2
+                             * because mov clobbers rs2.  Use neg+add instead:
+                             * rd = -rs2; rd += rs1 → rd = rs1 - rs2 */
+                            emit_neg(&e, rd);
+                            emit_add_rr(&e, rd, rs1);
+                        } else {
+                            emit_add_rr(&e, rd, rs1); /* ADD commutative */
+                        }
                     } else {
                         emit_mov_rr(&e, rd, rs1);
                         if (insn.funct7 & 0x20) emit_sub_rr(&e, rd, rs2);
@@ -1161,6 +1169,11 @@ int dbt_run(dbt_state_t *dbt) {
 
     for (;;) {
         uint32_t pc = dbt->ctx.next_pc;
+
+        if (dbt->trace) {
+            uint32_t rpc = pc & ~3u;
+            fprintf(stderr, "[dbt] pc=0x%08X\n", rpc);
+        }
 
         if (pc & 1) {
             dbt->ctx.next_pc = pc & ~3u;

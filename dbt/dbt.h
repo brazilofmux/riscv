@@ -61,6 +61,9 @@ typedef struct {
     uint32_t intrinsic_memset;
     uint32_t intrinsic_memmove;
     uint32_t intrinsic_strlen;
+
+    /* Debug */
+    int trace;
 } dbt_state_t;
 
 int dbt_init(dbt_state_t *dbt, rv32_binary_t *bin);

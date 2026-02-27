@@ -19,11 +19,14 @@ int main(int argc, char *argv[]) {
     int use_interp = 0;
     const char *elf_file = NULL;
 
+    int trace = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-i") == 0) {
             use_interp = 1;
         } else if (strcmp(argv[i], "-s") == 0) {
             show_stats = 1;
+        } else if (strcmp(argv[i], "-t") == 0) {
+            trace = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -73,6 +76,7 @@ int main(int argc, char *argv[]) {
         dbt.ctx.next_pc = bin.entry_point;
         dbt.ctx.x[2] = bin.stack_top;
 
+        dbt.trace = trace;
         exit_code = dbt_run(&dbt);
 
         if (show_stats) {

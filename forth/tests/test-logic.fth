@@ -1,0 +1,26 @@
+\ Test logic and bitwise operations
+
+\ AND
+255 15 AND . CR
+0 255 AND . CR
+
+\ OR
+240 15 OR . CR
+0 0 OR . CR
+
+\ XOR
+255 15 XOR . CR
+42 42 XOR . CR
+
+\ INVERT
+0 INVERT . CR
+
+\ LSHIFT
+1 4 LSHIFT . CR
+3 8 LSHIFT . CR
+
+\ RSHIFT
+256 4 RSHIFT . CR
+768 8 RSHIFT . CR
+
+BYE
