@@ -805,9 +805,15 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             int rs1 = rc_read(&e, &rc, insn.rs1);
             emit_mov_rr(&e, X64_RAX, rs1);
             emit_add_r_imm(&e, X64_RAX, insn.imm);
-            int rs2 = rc_read(&e, &rc, insn.rs2);
-            /* Store needs value in a register the mem emitter can use.
-             * Cache regs (R8-R15) need REX for 8-bit ops, which emit_store_mem8 handles. */
+            /* rc_read(x0) clobbers RAX (xor rax,rax), but RAX holds
+             * the store address.  Use RCX for zero instead. */
+            int rs2;
+            if (insn.rs2 == 0) {
+                emit_xor_rr(&e, X64_RCX, X64_RCX);
+                rs2 = X64_RCX;
+            } else {
+                rs2 = rc_read(&e, &rc, insn.rs2);
+            }
             switch (insn.funct3) {
             case ST_SW: emit_store_mem32(&e, X64_RAX, rs2); break;
             case ST_SH: emit_store_mem16(&e, X64_RAX, rs2); break;
