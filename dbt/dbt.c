@@ -1043,6 +1043,43 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 count++;
                 continue;
             }
+            /* AUIPC+JALR / LUI+JALR fusion: resolve indirect call/jump to
+             * direct when the target is a compile-time constant. */
+            if (ni.opcode == OP_JALR && ni.rs1 == insn.rd) {
+                uint32_t base = (insn.opcode == OP_AUIPC) ? pc : 0;
+                uint32_t target = (base + (uint32_t)(insn.imm + ni.imm)) & ~1u;
+                uint32_t return_pc = pc + 8;
+
+                /* Materialize AUIPC/LUI result if not overwritten by JALR.rd */
+                if (insn.rd != ni.rd && insn.rd != 0) {
+                    int auipc_rd = rc_write(&e, &rc, insn.rd);
+                    emit_mov_r32_imm32(&e, auipc_rd, base + (uint32_t)insn.imm);
+                }
+
+                /* Write return address to JALR.rd */
+                if (ni.rd) {
+                    int jalr_rd = rc_write(&e, &rc, ni.rd);
+                    emit_mov_r32_imm32(&e, jalr_rd, return_pc);
+                }
+
+                /* RAS push for calls (JALR rd=ra) */
+                if (ni.rd == 1)
+                    emit_ras_push(&e, return_pc);
+
+                /* Tail call: inline jump like JAL rd=0 */
+                if (ni.rd == 0
+                    && !(target >= guest_pc && target <= pc + 4)
+                    && count < MAX_BLOCK_INSNS - 4) {
+                    pc = target;
+                    count++;
+                    continue;
+                }
+
+                rc_flush(&e, &rc);
+                emit_exit_chained(&e, target);
+                count++;
+                goto done;
+            }
         }
 
         switch (insn.opcode) {
