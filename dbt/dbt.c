@@ -1011,6 +1011,8 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
 
     uint32_t pc = guest_pc;
     int count = 0;
+    uint8_t branch_jcc = 0;
+    int32_t branch_imm = 0;
 
     while (count < MAX_BLOCK_INSNS) {
         if (pc + 4 > dbt->bin->code_end) {
@@ -1080,6 +1082,156 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 count++;
                 goto done;
             }
+            /* AUIPC+load / LUI+load fusion: when the address is fully known
+             * at translate time, use direct [R12+disp] addressing. */
+            if (ni.opcode == OP_LOAD && ni.rs1 == insn.rd) {
+                uint32_t base = (insn.opcode == OP_AUIPC) ? pc : 0;
+                int32_t addr = (int32_t)(base + (uint32_t)(insn.imm + ni.imm));
+                /* Materialize AUIPC/LUI result if load doesn't overwrite it */
+                if (insn.rd != ni.rd && insn.rd != 0) {
+                    int auipc_rd = rc_write(&e, &rc, insn.rd);
+                    emit_mov_r32_imm32(&e, auipc_rd, base + (uint32_t)insn.imm);
+                }
+                int rd = ni.rd ? rc_write(&e, &rc, ni.rd) : X64_RCX;
+                switch (ni.funct3) {
+                case LD_LW:  emit_load_abs32(&e, rd, addr);  break;
+                case LD_LH:  emit_load_abs16s(&e, rd, addr); break;
+                case LD_LHU: emit_load_abs16u(&e, rd, addr); break;
+                case LD_LB:  emit_load_abs8s(&e, rd, addr);  break;
+                case LD_LBU: emit_load_abs8u(&e, rd, addr);  break;
+                default: goto no_fusion;
+                }
+                pc += 8;
+                count++;
+                continue;
+            }
+            /* AUIPC+store / LUI+store fusion: direct [R12+disp] addressing. */
+            if (ni.opcode == OP_STORE && ni.rs1 == insn.rd) {
+                uint32_t base = (insn.opcode == OP_AUIPC) ? pc : 0;
+                int32_t addr = (int32_t)(base + (uint32_t)(insn.imm + ni.imm));
+                /* Always materialize AUIPC/LUI result (store doesn't write rd) */
+                if (insn.rd != 0) {
+                    int auipc_rd = rc_write(&e, &rc, insn.rd);
+                    emit_mov_r32_imm32(&e, auipc_rd, base + (uint32_t)insn.imm);
+                }
+                int rs2;
+                if (ni.rs2 == 0) {
+                    emit_xor_rr(&e, X64_RCX, X64_RCX);
+                    rs2 = X64_RCX;
+                } else {
+                    rs2 = rc_read(&e, &rc, ni.rs2);
+                }
+                switch (ni.funct3) {
+                case ST_SW: emit_store_abs32(&e, rs2, addr); break;
+                case ST_SH: emit_store_abs16(&e, rs2, addr); break;
+                case ST_SB: emit_store_abs8(&e, rs2, addr);  break;
+                default: goto no_fusion;
+                }
+                pc += 8;
+                count++;
+                continue;
+            }
+        }
+        no_fusion:
+
+        /* SLT+branch / SLTU+branch fusion: when SLT(U)/SLTI(U) is followed
+         * by BEQ/BNE against x0, fuse into cmp+jcc (skip redundant test). */
+        if ((insn.opcode == OP_REG && insn.funct7 == 0
+             && (insn.funct3 == ALU_SLT || insn.funct3 == ALU_SLTU))
+            || (insn.opcode == OP_IMM
+                && (insn.funct3 == ALU_SLTI || insn.funct3 == ALU_SLTIU))) {
+            if (pc + 8 <= dbt->bin->code_end) {
+                uint32_t nw;
+                memcpy(&nw, dbt->bin->memory + pc + 4, 4);
+                rv32_insn_t ni;
+                rv32_decode(nw, &ni);
+                /* Match BEQ/BNE where one operand is SLT.rd and the other is x0 */
+                if (ni.opcode == OP_BRANCH
+                    && (ni.funct3 == BR_BEQ || ni.funct3 == BR_BNE)
+                    && ((ni.rs1 == insn.rd && ni.rs2 == 0)
+                        || (ni.rs2 == insn.rd && ni.rs1 == 0))) {
+                    int is_signed = (insn.opcode == OP_REG)
+                        ? (insn.funct3 == ALU_SLT) : (insn.funct3 == ALU_SLTI);
+                    /* Emit the comparison from the SLT */
+                    if (insn.opcode == OP_REG) {
+                        int rs1 = rc_read(&e, &rc, insn.rs1);
+                        int rs2 = rc_read(&e, &rc, insn.rs2);
+                        emit_cmp_rr(&e, rs1, rs2);
+                    } else {
+                        int rs1 = rc_read(&e, &rc, insn.rs1);
+                        emit_cmp_r_imm(&e, rs1, insn.imm);
+                    }
+                    /* Materialize SLT result — setcc/movzx don't clobber flags */
+                    if (insn.rd) {
+                        emit_setcc(&e, is_signed ? SETCC_L : SETCC_B, X64_RAX);
+                        int rd = rc_write(&e, &rc, insn.rd);
+                        emit_movzx_r32_r8(&e, rd, X64_RAX);
+                    }
+                    /* BNE rd, x0 = branch if SLT was true → use < condition
+                     * BEQ rd, x0 = branch if SLT was false → use >= condition */
+                    if (ni.funct3 == BR_BNE)
+                        branch_jcc = is_signed ? JCC_L : JCC_B;
+                    else
+                        branch_jcc = is_signed ? JCC_GE : JCC_AE;
+                    branch_imm = ni.imm;
+                    pc += 4;  /* advance past SLT to branch PC */
+                    count++;
+                    goto emit_branch;
+
+                    /* Shared branch emission — also used by OP_BRANCH below.
+                     * Expects: branch_jcc, branch_imm, pc = branch insn PC.
+                     * Uses all branch paths: self-loop, diamond, superblock, normal. */
+                    { emit_branch:;
+                        if (self_loop && pc + branch_imm == guest_pc) {
+                            emit_jcc_rel32(&e, branch_jcc);
+                            emit_patch_rel32(&e, emit_pos(&e) - 4, warm_entry);
+                            rc_flush(&e, &rc);
+                            emit_exit_chained(&e, pc + 4);
+                            goto done;
+                        }
+                        if (branch_imm > 0 && branch_imm <= 16 &&
+                            can_diamond_merge(dbt, pc + 4, (uint32_t)(pc + branch_imm))) {
+                            rc_flush(&e, &rc);
+                            rc_init(&rc);
+                            emit_jcc_rel32(&e, branch_jcc);
+                            uint32_t merge_patch = emit_pos(&e) - 4;
+                            uint32_t merge_target = (uint32_t)(pc + branch_imm);
+                            pc += 4;
+                            while (pc < merge_target) {
+                                uint32_t fw;
+                                memcpy(&fw, dbt->bin->memory + pc, 4);
+                                rv32_insn_t fi;
+                                rv32_decode(fw, &fi);
+                                translate_one(dbt, &e, &rc, &fi, pc);
+                                pc += 4;
+                                count++;
+                            }
+                            rc_flush(&e, &rc);
+                            rc_init(&rc);
+                            emit_patch_rel32(&e, merge_patch, emit_pos(&e));
+                            dbt->diamond_merges++;
+                            break;
+                        }
+                        if (num_side_exits < MAX_SIDE_EXITS && count < MAX_BLOCK_INSNS - 4) {
+                            emit_jcc_rel32(&e, branch_jcc);
+                            side_exits[num_side_exits].jcc_patch = emit_pos(&e) - 4;
+                            side_exits[num_side_exits].target_pc = (uint32_t)(pc + branch_imm);
+                            memcpy(side_exits[num_side_exits].snapshot, rc.slots, sizeof(rc.slots));
+                            num_side_exits++;
+                            pc += 4;
+                            break;
+                        }
+                        emit_jcc_rel32(&e, branch_jcc);
+                        uint32_t patch_taken = emit_pos(&e) - 4;
+                        rc_flush(&e, &rc);
+                        emit_exit_chained(&e, pc + 4);
+                        emit_patch_rel32(&e, patch_taken, emit_pos(&e));
+                        rc_flush(&e, &rc);
+                        emit_exit_chained(&e, pc + branch_imm);
+                        goto done;
+                    }
+                }
+            }
         }
 
         switch (insn.opcode) {
@@ -1142,84 +1294,20 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             int rs2 = rc_read(&e, &rc, insn.rs2);
             emit_cmp_rr(&e, rs1, rs2);
 
-            uint8_t jcc;
             switch (insn.funct3) {
-            case BR_BEQ:  jcc = JCC_E;  break;
-            case BR_BNE:  jcc = JCC_NE; break;
-            case BR_BLT:  jcc = JCC_L;  break;
-            case BR_BGE:  jcc = JCC_GE; break;
-            case BR_BLTU: jcc = JCC_B;  break;
-            case BR_BGEU: jcc = JCC_AE; break;
+            case BR_BEQ:  branch_jcc = JCC_E;  break;
+            case BR_BNE:  branch_jcc = JCC_NE; break;
+            case BR_BLT:  branch_jcc = JCC_L;  break;
+            case BR_BGE:  branch_jcc = JCC_GE; break;
+            case BR_BLTU: branch_jcc = JCC_B;  break;
+            case BR_BGEU: branch_jcc = JCC_AE; break;
             default:
                 rc_flush(&e, &rc);
                 emit_exit_with_pc(&e, pc);
                 goto done;
             }
-
-            if (self_loop && pc + insn.imm == guest_pc) {
-                /* Self-loop: jcc back to warm_entry, fall through = exit */
-                emit_jcc_rel32(&e, jcc);
-                emit_patch_rel32(&e, emit_pos(&e) - 4, warm_entry);
-                rc_flush(&e, &rc);
-                emit_exit_chained(&e, pc + 4);
-                goto done;
-            }
-
-            /* Diamond merge: if this is a trivial forward branch (1-4
-             * instructions to target), emit both paths inline. */
-            if (insn.imm > 0 && insn.imm <= 16 &&
-                can_diamond_merge(dbt, pc + 4, (uint32_t)(pc + insn.imm))) {
-                /* Flush all dirty regs BEFORE the branch so the taken
-                 * path (which skips the fall-through) has correct guest
-                 * state in memory.  mov doesn't clobber flags so the
-                 * cmp/jcc pair remains valid across the flush. */
-                rc_flush(&e, &rc);
-                rc_init(&rc);
-                /* Branch taken → skip fall-through body to merge point */
-                emit_jcc_rel32(&e, jcc);
-                uint32_t merge_patch = emit_pos(&e) - 4;
-                uint32_t merge_target = (uint32_t)(pc + insn.imm);
-                pc += 4;
-                /* Translate fall-through instructions inline (clean cache) */
-                while (pc < merge_target) {
-                    uint32_t fw;
-                    memcpy(&fw, dbt->bin->memory + pc, 4);
-                    rv32_insn_t fi;
-                    rv32_decode(fw, &fi);
-                    translate_one(dbt, &e, &rc, &fi, pc);
-                    pc += 4;
-                    count++;
-                }
-                /* Flush fall-through results and reinit at merge point.
-                 * Both paths now have correct state in memory. */
-                rc_flush(&e, &rc);
-                rc_init(&rc);
-                emit_patch_rel32(&e, merge_patch, emit_pos(&e));
-                dbt->diamond_merges++;
-                break;
-            }
-
-            /* Superblock extension: extend through branch on fall-through,
-             * emit taken path as deferred side exit with cache snapshot. */
-            if (num_side_exits < MAX_SIDE_EXITS && count < MAX_BLOCK_INSNS - 4) {
-                emit_jcc_rel32(&e, jcc);
-                side_exits[num_side_exits].jcc_patch = emit_pos(&e) - 4;
-                side_exits[num_side_exits].target_pc = (uint32_t)(pc + insn.imm);
-                memcpy(side_exits[num_side_exits].snapshot, rc.slots, sizeof(rc.slots));
-                num_side_exits++;
-                pc += 4;
-                break;  /* continue translating fall-through */
-            }
-
-            /* Normal branch: emit both exits */
-            emit_jcc_rel32(&e, jcc);
-            uint32_t patch_taken = emit_pos(&e) - 4;
-            rc_flush(&e, &rc);
-            emit_exit_chained(&e, pc + 4);
-            emit_patch_rel32(&e, patch_taken, emit_pos(&e));
-            rc_flush(&e, &rc);
-            emit_exit_chained(&e, pc + insn.imm);
-            goto done;
+            branch_imm = insn.imm;
+            goto emit_branch;
         }
 
         case OP_SYSTEM:

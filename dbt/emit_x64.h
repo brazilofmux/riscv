@@ -508,6 +508,73 @@ static inline void emit_load_mem8u(emit_t *e, int dst, int idx, int32_t disp) {
     emit_sib_disp(e, dst, idx, disp);
 }
 
+/* SIB+displacement encoding for [R12 + disp] addressing (no index register).
+ * SIB byte: index=100 (none), base=100 (R12 lo). REX.B=1 for R12. */
+static inline void emit_sib_disp_noindex(emit_t *e, int mod_reg, int32_t disp) {
+    int mod = (disp == 0) ? 0x00 : (disp >= -128 && disp <= 127) ? 0x01 : 0x02;
+    emit_byte(e, modrm(mod, mod_reg, 0x04));  /* rm=100 → SIB follows */
+    emit_byte(e, 0x24);  /* index=100 (none), base=100 (R12 lo) */
+    if (mod == 0x01) emit_byte(e, (uint8_t)(int8_t)disp);
+    else if (mod == 0x02) emit_u32(e, (uint32_t)disp);
+}
+
+/* mov r32, [R12 + disp] (no index) */
+static inline void emit_load_abs32(emit_t *e, int dst, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(dst), 0, 1));
+    emit_byte(e, 0x8B);
+    emit_sib_disp_noindex(e, dst, disp);
+}
+
+/* movsx r32, word [R12 + disp] (no index) */
+static inline void emit_load_abs16s(emit_t *e, int dst, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(dst), 0, 1));
+    emit_byte(e, 0x0F); emit_byte(e, 0xBF);
+    emit_sib_disp_noindex(e, dst, disp);
+}
+
+/* movzx r32, word [R12 + disp] (no index) */
+static inline void emit_load_abs16u(emit_t *e, int dst, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(dst), 0, 1));
+    emit_byte(e, 0x0F); emit_byte(e, 0xB7);
+    emit_sib_disp_noindex(e, dst, disp);
+}
+
+/* movsx r32, byte [R12 + disp] (no index) */
+static inline void emit_load_abs8s(emit_t *e, int dst, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(dst), 0, 1));
+    emit_byte(e, 0x0F); emit_byte(e, 0xBE);
+    emit_sib_disp_noindex(e, dst, disp);
+}
+
+/* movzx r32, byte [R12 + disp] (no index) */
+static inline void emit_load_abs8u(emit_t *e, int dst, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(dst), 0, 1));
+    emit_byte(e, 0x0F); emit_byte(e, 0xB6);
+    emit_sib_disp_noindex(e, dst, disp);
+}
+
+/* mov [R12 + disp], r32 (no index) */
+static inline void emit_store_abs32(emit_t *e, int src, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(src), 0, 1));
+    emit_byte(e, 0x89);
+    emit_sib_disp_noindex(e, src, disp);
+}
+
+/* mov word [R12 + disp], r16 (no index) */
+static inline void emit_store_abs16(emit_t *e, int src, int32_t disp) {
+    emit_byte(e, 0x66);
+    emit_byte(e, rex(0, reg_hi(src), 0, 1));
+    emit_byte(e, 0x89);
+    emit_sib_disp_noindex(e, src, disp);
+}
+
+/* mov byte [R12 + disp], r8 (no index) */
+static inline void emit_store_abs8(emit_t *e, int src, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(src), 0, 1));
+    emit_byte(e, 0x88);
+    emit_sib_disp_noindex(e, src, disp);
+}
+
 /* mov [R12 + idx + disp], r32 */
 static inline void emit_store_mem32(emit_t *e, int idx, int src, int32_t disp) {
     emit_byte(e, rex(0, reg_hi(src), reg_hi(idx), 1));
