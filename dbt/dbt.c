@@ -468,6 +468,309 @@ typedef struct {
 
 #define MAX_SIDE_EXITS 8
 
+/* ---- Diamond merge ---- */
+
+/* Check if the fall-through path from start to target contains only
+ * straight-line instructions (no branches, jumps, calls, system). */
+static int can_diamond_merge(dbt_state_t *dbt, uint32_t start, uint32_t target) {
+    for (uint32_t pc = start; pc < target; pc += 4) {
+        if (pc + 4 > dbt->bin->code_end) return 0;
+        uint32_t w;
+        memcpy(&w, dbt->bin->memory + pc, 4);
+        rv32_insn_t si;
+        rv32_decode(w, &si);
+        switch (si.opcode) {
+        case OP_LUI: case OP_AUIPC: case OP_LOAD: case OP_STORE:
+        case OP_IMM: case OP_REG: case OP_FENCE:
+            break;
+        default:
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Translate a single straight-line instruction (no control flow).
+ * Returns 0 on success, -1 if the opcode cannot be handled inline. */
+static int translate_one(dbt_state_t *dbt __attribute__((unused)),
+                         emit_t *e, reg_cache_t *rc,
+                         rv32_insn_t *insn, uint32_t pc) {
+    switch (insn->opcode) {
+
+    case OP_LUI:
+        if (insn->rd) {
+            int rd = rc_write(e, rc, insn->rd);
+            emit_mov_r32_imm32(e, rd, (uint32_t)insn->imm);
+        }
+        return 0;
+
+    case OP_AUIPC:
+        if (insn->rd) {
+            int rd = rc_write(e, rc, insn->rd);
+            emit_mov_r32_imm32(e, rd, pc + (uint32_t)insn->imm);
+        }
+        return 0;
+
+    case OP_LOAD: {
+        int rs1 = rc_read(e, rc, insn->rs1);
+        emit_mov_rr(e, X64_RAX, rs1);
+        emit_add_r_imm(e, X64_RAX, insn->imm);
+        int rd = insn->rd ? rc_write(e, rc, insn->rd) : X64_RCX;
+        switch (insn->funct3) {
+        case LD_LW:
+            emit_load_mem32(e, rd, X64_RAX);
+            break;
+        case LD_LH:
+            emit_load_mem16(e, rd, X64_RAX);
+            emit_movsx_r32_r16(e, rd, rd);
+            break;
+        case LD_LHU:
+            emit_load_mem16(e, rd, X64_RAX);
+            if (reg_hi(rd))
+                emit_byte(e, rex(0, reg_hi(rd), 0, reg_hi(rd)));
+            emit_byte(e, 0x0F); emit_byte(e, 0xB7);
+            emit_byte(e, modrm(0x03, rd, rd));
+            break;
+        case LD_LB:
+            emit_load_mem8u(e, rd, X64_RAX);
+            emit_movsx_r32_r8(e, rd, rd);
+            break;
+        case LD_LBU:
+            emit_load_mem8u(e, rd, X64_RAX);
+            break;
+        default:
+            return -1;
+        }
+        return 0;
+    }
+
+    case OP_STORE: {
+        int rs1 = rc_read(e, rc, insn->rs1);
+        emit_mov_rr(e, X64_RAX, rs1);
+        emit_add_r_imm(e, X64_RAX, insn->imm);
+        int rs2;
+        if (insn->rs2 == 0) {
+            emit_xor_rr(e, X64_RCX, X64_RCX);
+            rs2 = X64_RCX;
+        } else {
+            rs2 = rc_read(e, rc, insn->rs2);
+        }
+        switch (insn->funct3) {
+        case ST_SW: emit_store_mem32(e, X64_RAX, rs2); break;
+        case ST_SH: emit_store_mem16(e, X64_RAX, rs2); break;
+        case ST_SB: emit_store_mem8(e, X64_RAX, rs2); break;
+        default: return -1;
+        }
+        return 0;
+    }
+
+    case OP_IMM: {
+        int rs1 = rc_read(e, rc, insn->rs1);
+        int rd = insn->rd ? rc_write(e, rc, insn->rd) : X64_RAX;
+        if (rd != rs1) emit_mov_rr(e, rd, rs1);
+        switch (insn->funct3) {
+        case ALU_ADDI: emit_add_r_imm(e, rd, insn->imm); break;
+        case ALU_SLTI:
+            emit_cmp_r_imm(e, rd, insn->imm);
+            emit_setcc(e, SETCC_L, X64_RAX);
+            emit_movzx_r32_r8(e, rd, X64_RAX);
+            break;
+        case ALU_SLTIU:
+            emit_cmp_r_imm(e, rd, insn->imm);
+            emit_setcc(e, SETCC_B, X64_RAX);
+            emit_movzx_r32_r8(e, rd, X64_RAX);
+            break;
+        case ALU_XORI: emit_xor_r_imm(e, rd, insn->imm); break;
+        case ALU_ORI:  emit_or_r_imm(e, rd, insn->imm); break;
+        case ALU_ANDI: emit_and_r_imm(e, rd, insn->imm); break;
+        case ALU_SLLI: emit_shl_r_imm(e, rd, insn->imm & 0x1F); break;
+        case ALU_SRLI:
+            if (insn->funct7 & 0x20)
+                emit_sar_r_imm(e, rd, insn->imm & 0x1F);
+            else
+                emit_shr_r_imm(e, rd, insn->imm & 0x1F);
+            break;
+        }
+        return 0;
+    }
+
+    case OP_REG: {
+        if (insn->funct7 == 0x01) {
+            rc_load(e, rc, X64_RAX, insn->rs1);
+            rc_load(e, rc, X64_RCX, insn->rs2);
+            switch (insn->funct3) {
+            case 0: /* MUL */
+                emit_imul_rr(e, X64_RAX, X64_RCX);
+                break;
+            case 1: /* MULH */
+                emit_imul_1(e, X64_RCX);
+                emit_mov_rr(e, X64_RAX, X64_RDX);
+                break;
+            case 2: /* MULHSU */
+                emit_byte(e, rex(1, 0, 0, 0)); emit_byte(e, 0x63);
+                emit_byte(e, modrm(0x03, X64_RAX, X64_RAX));
+                emit_mov_rr(e, X64_RCX, X64_RCX);
+                emit_byte(e, rex(1, 0, 0, 0)); emit_byte(e, 0x0F); emit_byte(e, 0xAF);
+                emit_byte(e, modrm(0x03, X64_RAX, X64_RCX));
+                emit_byte(e, rex(1, 0, 0, 0));
+                emit_byte(e, 0xC1); emit_byte(e, modrm(0x03, 5, X64_RAX));
+                emit_byte(e, 32);
+                break;
+            case 3: /* MULHU */
+                emit_mul(e, X64_RCX);
+                emit_mov_rr(e, X64_RAX, X64_RDX);
+                break;
+            case 4: /* DIV */
+                emit_test_rr(e, X64_RCX, X64_RCX);
+                emit_jcc_rel32(e, JCC_NE);
+                { uint32_t p1 = emit_pos(e) - 4;
+                  emit_mov_r32_imm32(e, X64_RAX, (uint32_t)-1);
+                  emit_jmp_rel32(e);
+                  uint32_t p_end1 = emit_pos(e) - 4;
+                  emit_patch_rel32(e, p1, emit_pos(e));
+                  emit_cmp_r_imm(e, X64_RAX, (int32_t)0x80000000u);
+                  emit_jcc_rel32(e, JCC_NE);
+                  uint32_t p2 = emit_pos(e) - 4;
+                  emit_cmp_r_imm(e, X64_RCX, -1);
+                  emit_jcc_rel32(e, JCC_NE);
+                  uint32_t p3 = emit_pos(e) - 4;
+                  emit_mov_r32_imm32(e, X64_RAX, 0x80000000u);
+                  emit_jmp_rel32(e);
+                  uint32_t p_end2 = emit_pos(e) - 4;
+                  emit_patch_rel32(e, p2, emit_pos(e));
+                  emit_patch_rel32(e, p3, emit_pos(e));
+                  emit_cdq(e);
+                  emit_idiv(e, X64_RCX);
+                  emit_patch_rel32(e, p_end1, emit_pos(e));
+                  emit_patch_rel32(e, p_end2, emit_pos(e));
+                }
+                break;
+            case 5: /* DIVU */
+                emit_test_rr(e, X64_RCX, X64_RCX);
+                emit_jcc_rel32(e, JCC_NE);
+                { uint32_t p1 = emit_pos(e) - 4;
+                  emit_mov_r32_imm32(e, X64_RAX, UINT32_MAX);
+                  emit_jmp_rel32(e);
+                  uint32_t p_end = emit_pos(e) - 4;
+                  emit_patch_rel32(e, p1, emit_pos(e));
+                  emit_xor_rr(e, X64_RDX, X64_RDX);
+                  emit_div(e, X64_RCX);
+                  emit_patch_rel32(e, p_end, emit_pos(e));
+                }
+                break;
+            case 6: /* REM */
+                emit_test_rr(e, X64_RCX, X64_RCX);
+                emit_jcc_rel32(e, JCC_NE);
+                { uint32_t p1 = emit_pos(e) - 4;
+                  emit_jmp_rel32(e);
+                  uint32_t p_end1 = emit_pos(e) - 4;
+                  emit_patch_rel32(e, p1, emit_pos(e));
+                  emit_cmp_r_imm(e, X64_RAX, (int32_t)0x80000000u);
+                  emit_jcc_rel32(e, JCC_NE);
+                  uint32_t p2 = emit_pos(e) - 4;
+                  emit_cmp_r_imm(e, X64_RCX, -1);
+                  emit_jcc_rel32(e, JCC_NE);
+                  uint32_t p3 = emit_pos(e) - 4;
+                  emit_xor_rr(e, X64_RAX, X64_RAX);
+                  emit_jmp_rel32(e);
+                  uint32_t p_end2 = emit_pos(e) - 4;
+                  emit_patch_rel32(e, p2, emit_pos(e));
+                  emit_patch_rel32(e, p3, emit_pos(e));
+                  emit_cdq(e);
+                  emit_idiv(e, X64_RCX);
+                  emit_mov_rr(e, X64_RAX, X64_RDX);
+                  emit_patch_rel32(e, p_end1, emit_pos(e));
+                  emit_patch_rel32(e, p_end2, emit_pos(e));
+                }
+                break;
+            case 7: /* REMU */
+                emit_test_rr(e, X64_RCX, X64_RCX);
+                emit_jcc_rel32(e, JCC_NE);
+                { uint32_t p1 = emit_pos(e) - 4;
+                  emit_jmp_rel32(e);
+                  uint32_t p_end = emit_pos(e) - 4;
+                  emit_patch_rel32(e, p1, emit_pos(e));
+                  emit_xor_rr(e, X64_RDX, X64_RDX);
+                  emit_div(e, X64_RCX);
+                  emit_mov_rr(e, X64_RAX, X64_RDX);
+                  emit_patch_rel32(e, p_end, emit_pos(e));
+                }
+                break;
+            }
+            if (insn->rd)
+                rc_store(e, rc, insn->rd, X64_RAX);
+        } else {
+            int rs1 = rc_read(e, rc, insn->rs1);
+            int rs2 = rc_read(e, rc, insn->rs2);
+            int rd = insn->rd ? rc_write(e, rc, insn->rd) : X64_RAX;
+
+            switch (insn->funct3) {
+            case ALU_ADD:
+                if (rd == rs1) {
+                    if (insn->funct7 & 0x20) emit_sub_rr(e, rd, rs2);
+                    else emit_add_rr(e, rd, rs2);
+                } else if (rd == rs2) {
+                    if (insn->funct7 & 0x20) {
+                        emit_neg(e, rd);
+                        emit_add_rr(e, rd, rs1);
+                    } else {
+                        emit_add_rr(e, rd, rs1);
+                    }
+                } else {
+                    emit_mov_rr(e, rd, rs1);
+                    if (insn->funct7 & 0x20) emit_sub_rr(e, rd, rs2);
+                    else emit_add_rr(e, rd, rs2);
+                }
+                break;
+            case ALU_SLL:
+                emit_mov_rr(e, X64_RCX, rs2);
+                if (rd != rs1) emit_mov_rr(e, rd, rs1);
+                emit_shl_r_cl(e, rd);
+                break;
+            case ALU_SLT:
+                emit_cmp_rr(e, rs1, rs2);
+                emit_setcc(e, SETCC_L, X64_RAX);
+                emit_movzx_r32_r8(e, rd, X64_RAX);
+                break;
+            case ALU_SLTU:
+                emit_cmp_rr(e, rs1, rs2);
+                emit_setcc(e, SETCC_B, X64_RAX);
+                emit_movzx_r32_r8(e, rd, X64_RAX);
+                break;
+            case ALU_XOR:
+                if (rd == rs1) emit_xor_rr_op(e, rd, rs2);
+                else if (rd == rs2) emit_xor_rr_op(e, rd, rs1);
+                else { emit_mov_rr(e, rd, rs1); emit_xor_rr_op(e, rd, rs2); }
+                break;
+            case ALU_SRL:
+                emit_mov_rr(e, X64_RCX, rs2);
+                if (rd != rs1) emit_mov_rr(e, rd, rs1);
+                if (insn->funct7 & 0x20) emit_sar_r_cl(e, rd);
+                else emit_shr_r_cl(e, rd);
+                break;
+            case ALU_OR:
+                if (rd == rs1) emit_or_rr(e, rd, rs2);
+                else if (rd == rs2) emit_or_rr(e, rd, rs1);
+                else { emit_mov_rr(e, rd, rs1); emit_or_rr(e, rd, rs2); }
+                break;
+            case ALU_AND:
+                if (rd == rs1) emit_and_rr(e, rd, rs2);
+                else if (rd == rs2) emit_and_rr(e, rd, rs1);
+                else { emit_mov_rr(e, rd, rs1); emit_and_rr(e, rd, rs2); }
+                break;
+            }
+        }
+        return 0;
+    }
+
+    case OP_FENCE:
+        return 0;
+
+    default:
+        return -1;
+    }
+}
+
 /* ---- Intrinsic stubs ---- */
 
 /*
@@ -644,27 +947,76 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
 
     /* Self-loop detection: pre-scan to find if any branch targets start_pc.
      * If so, pre-warm the register cache and record a warm_entry point.
-     * The back-edge jumps to warm_entry, skipping the cold loads. */
+     * The back-edge jumps to warm_entry, skipping the cold loads.
+     *
+     * Extended scan: follows superblock-like fall-through past forward
+     * branches and unconditional jumps to detect back-edges through
+     * forward branches (common in loops with if-then bodies).
+     * Register usage is only collected from the prefix before the first
+     * control-flow instruction (same as original) to keep the warm_entry
+     * register mapping stable. */
     uint32_t warm_entry = 0;
     int self_loop = 0;
     {
         uint32_t scan_pc = guest_pc;
         int used[32] = {0};
+        int past_first_branch = 0;  /* stop updating used[] after first branch */
+        int scan_depth = 0;         /* count of branches bypassed */
         for (int i = 0; i < MAX_BLOCK_INSNS && scan_pc + 4 <= dbt->bin->code_end; i++) {
             uint32_t w;
             memcpy(&w, dbt->bin->memory + scan_pc, 4);
             rv32_insn_t si;
             rv32_decode(w, &si);
-            if (si.rs1) used[si.rs1] = 1;
-            if ((si.opcode == OP_REG || si.opcode == OP_BRANCH || si.opcode == OP_STORE) && si.rs2)
-                used[si.rs2] = 1;
-            if (si.opcode == OP_BRANCH) {
-                if (scan_pc + si.imm == guest_pc) self_loop = 1;
-                break;
+            if (!past_first_branch) {
+                if (si.rs1) used[si.rs1] = 1;
+                if ((si.opcode == OP_REG || si.opcode == OP_BRANCH || si.opcode == OP_STORE) && si.rs2)
+                    used[si.rs2] = 1;
             }
-            if (si.opcode == OP_JAL || si.opcode == OP_JALR || si.opcode == OP_SYSTEM)
+            if (si.opcode == OP_BRANCH) {
+                uint32_t target = scan_pc + si.imm;
+                if (target == guest_pc) {
+                    self_loop = 1;
+                    break;
+                }
+                if (si.imm < 0)
+                    break;  /* backward branch elsewhere — stop */
+                /* Forward branch: continue scanning fall-through */
+                past_first_branch = 1;
+                if (++scan_depth >= MAX_SIDE_EXITS)
+                    break;
+                scan_pc += 4;
+                continue;
+            }
+            if (si.opcode == OP_JAL) {
+                if (si.rd != 0)
+                    break;  /* call (JAL ra) — stop */
+                uint32_t target = scan_pc + si.imm;
+                if (target == guest_pc) {
+                    self_loop = 1;
+                    break;
+                }
+                if (si.imm > 0 && target + 4 <= dbt->bin->code_end) {
+                    /* Forward unconditional jump: follow target */
+                    past_first_branch = 1;
+                    if (++scan_depth >= MAX_SIDE_EXITS)
+                        break;
+                    scan_pc = target;
+                    continue;
+                }
+                break;  /* backward or out-of-range jump — stop */
+            }
+            if (si.opcode == OP_JALR || si.opcode == OP_SYSTEM)
                 break;
             scan_pc += 4;
+        }
+        if (self_loop && past_first_branch) {
+            /* Deep self-loop: don't enable warm_entry because the
+             * 8-slot register cache fills up during translation of
+             * the extended loop body.  Evictions remap host registers
+             * to different guest registers, so warm_entry's assumed
+             * mapping diverges from the actual mapping at the back-edge.
+             * Let the branch be handled normally instead. */
+            self_loop = 0;
         }
         if (self_loop) {
             int loaded = 0;
@@ -697,18 +1049,12 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
 
         switch (insn.opcode) {
 
-        case OP_LUI:
-            if (insn.rd) {
-                int rd = rc_write(&e, &rc, insn.rd);
-                emit_mov_r32_imm32(&e, rd, (uint32_t)insn.imm);
-            }
-            pc += 4;
-            break;
-
-        case OP_AUIPC:
-            if (insn.rd) {
-                int rd = rc_write(&e, &rc, insn.rd);
-                emit_mov_r32_imm32(&e, rd, pc + (uint32_t)insn.imm);
+        case OP_LUI: case OP_AUIPC: case OP_LOAD: case OP_STORE:
+        case OP_IMM: case OP_REG: case OP_FENCE:
+            if (translate_one(dbt, &e, &rc, &insn, pc) < 0) {
+                rc_flush(&e, &rc);
+                emit_exit_with_pc(&e, pc);
+                goto done;
             }
             pc += 4;
             break;
@@ -779,10 +1125,43 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 /* Self-loop: jcc back to warm_entry, fall through = exit */
                 emit_jcc_rel32(&e, jcc);
                 emit_patch_rel32(&e, emit_pos(&e) - 4, warm_entry);
-                /* Not-taken: flush + exit */
                 rc_flush(&e, &rc);
                 emit_exit_chained(&e, pc + 4);
                 goto done;
+            }
+
+            /* Diamond merge: if this is a trivial forward branch (1-4
+             * instructions to target), emit both paths inline. */
+            if (insn.imm > 0 && insn.imm <= 16 &&
+                can_diamond_merge(dbt, pc + 4, (uint32_t)(pc + insn.imm))) {
+                /* Flush all dirty regs BEFORE the branch so the taken
+                 * path (which skips the fall-through) has correct guest
+                 * state in memory.  mov doesn't clobber flags so the
+                 * cmp/jcc pair remains valid across the flush. */
+                rc_flush(&e, &rc);
+                rc_init(&rc);
+                /* Branch taken → skip fall-through body to merge point */
+                emit_jcc_rel32(&e, jcc);
+                uint32_t merge_patch = emit_pos(&e) - 4;
+                uint32_t merge_target = (uint32_t)(pc + insn.imm);
+                pc += 4;
+                /* Translate fall-through instructions inline (clean cache) */
+                while (pc < merge_target) {
+                    uint32_t fw;
+                    memcpy(&fw, dbt->bin->memory + pc, 4);
+                    rv32_insn_t fi;
+                    rv32_decode(fw, &fi);
+                    translate_one(dbt, &e, &rc, &fi, pc);
+                    pc += 4;
+                    count++;
+                }
+                /* Flush fall-through results and reinit at merge point.
+                 * Both paths now have correct state in memory. */
+                rc_flush(&e, &rc);
+                rc_init(&rc);
+                emit_patch_rel32(&e, merge_patch, emit_pos(&e));
+                dbt->diamond_merges++;
+                break;
             }
 
             /* Superblock extension: extend through branch on fall-through,
@@ -807,281 +1186,6 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             emit_exit_chained(&e, pc + insn.imm);
             goto done;
         }
-
-        case OP_LOAD: {
-            /* Address computation in RAX (scratch) */
-            int rs1 = rc_read(&e, &rc, insn.rs1);
-            emit_mov_rr(&e, X64_RAX, rs1);
-            emit_add_r_imm(&e, X64_RAX, insn.imm);
-            /* Load into rd's cache register directly */
-            int rd = insn.rd ? rc_write(&e, &rc, insn.rd) : X64_RCX;
-            switch (insn.funct3) {
-            case LD_LW:
-                emit_load_mem32(&e, rd, X64_RAX);
-                break;
-            case LD_LH:
-                emit_load_mem16(&e, rd, X64_RAX);
-                emit_movsx_r32_r16(&e, rd, rd);
-                break;
-            case LD_LHU:
-                emit_load_mem16(&e, rd, X64_RAX);
-                /* movzx r32, r16 — needs REX if rd is R8-R15 */
-                if (reg_hi(rd))
-                    emit_byte(&e, rex(0, reg_hi(rd), 0, reg_hi(rd)));
-                emit_byte(&e, 0x0F); emit_byte(&e, 0xB7);
-                emit_byte(&e, modrm(0x03, rd, rd));
-                break;
-            case LD_LB:
-                emit_load_mem8u(&e, rd, X64_RAX);
-                emit_movsx_r32_r8(&e, rd, rd);
-                break;
-            case LD_LBU:
-                emit_load_mem8u(&e, rd, X64_RAX);
-                break;
-            default:
-                rc_flush(&e, &rc);
-                emit_exit_with_pc(&e, pc);
-                goto done;
-            }
-            pc += 4;
-            break;
-        }
-
-        case OP_STORE: {
-            int rs1 = rc_read(&e, &rc, insn.rs1);
-            emit_mov_rr(&e, X64_RAX, rs1);
-            emit_add_r_imm(&e, X64_RAX, insn.imm);
-            /* rc_read(x0) clobbers RAX (xor rax,rax), but RAX holds
-             * the store address.  Use RCX for zero instead. */
-            int rs2;
-            if (insn.rs2 == 0) {
-                emit_xor_rr(&e, X64_RCX, X64_RCX);
-                rs2 = X64_RCX;
-            } else {
-                rs2 = rc_read(&e, &rc, insn.rs2);
-            }
-            switch (insn.funct3) {
-            case ST_SW: emit_store_mem32(&e, X64_RAX, rs2); break;
-            case ST_SH: emit_store_mem16(&e, X64_RAX, rs2); break;
-            case ST_SB: emit_store_mem8(&e, X64_RAX, rs2); break;
-            default:
-                rc_flush(&e, &rc);
-                emit_exit_with_pc(&e, pc);
-                goto done;
-            }
-            pc += 4;
-            break;
-        }
-
-        case OP_IMM: {
-            int rs1 = rc_read(&e, &rc, insn.rs1);
-            int rd = insn.rd ? rc_write(&e, &rc, insn.rd) : X64_RAX;
-            if (rd != rs1) emit_mov_rr(&e, rd, rs1);
-            switch (insn.funct3) {
-            case ALU_ADDI: emit_add_r_imm(&e, rd, insn.imm); break;
-            case ALU_SLTI:
-                emit_cmp_r_imm(&e, rd, insn.imm);
-                emit_setcc(&e, SETCC_L, X64_RAX);
-                emit_movzx_r32_r8(&e, rd, X64_RAX);
-                break;
-            case ALU_SLTIU:
-                emit_cmp_r_imm(&e, rd, insn.imm);
-                emit_setcc(&e, SETCC_B, X64_RAX);
-                emit_movzx_r32_r8(&e, rd, X64_RAX);
-                break;
-            case ALU_XORI: emit_xor_r_imm(&e, rd, insn.imm); break;
-            case ALU_ORI:  emit_or_r_imm(&e, rd, insn.imm); break;
-            case ALU_ANDI: emit_and_r_imm(&e, rd, insn.imm); break;
-            case ALU_SLLI: emit_shl_r_imm(&e, rd, insn.imm & 0x1F); break;
-            case ALU_SRLI:
-                if (insn.funct7 & 0x20)
-                    emit_sar_r_imm(&e, rd, insn.imm & 0x1F);
-                else
-                    emit_shr_r_imm(&e, rd, insn.imm & 0x1F);
-                break;
-            }
-            pc += 4;
-            break;
-        }
-
-        case OP_REG: {
-            if (insn.funct7 == 0x01) {
-                /* M extension — needs RAX/RCX/RDX, use legacy load/store */
-                rc_load(&e, &rc, X64_RAX, insn.rs1);
-                rc_load(&e, &rc, X64_RCX, insn.rs2);
-                switch (insn.funct3) {
-                case 0: /* MUL */
-                    emit_imul_rr(&e, X64_RAX, X64_RCX);
-                    break;
-                case 1: /* MULH */
-                    emit_imul_1(&e, X64_RCX);
-                    emit_mov_rr(&e, X64_RAX, X64_RDX);
-                    break;
-                case 2: /* MULHSU */
-                    emit_byte(&e, rex(1, 0, 0, 0)); emit_byte(&e, 0x63);
-                    emit_byte(&e, modrm(0x03, X64_RAX, X64_RAX));
-                    emit_mov_rr(&e, X64_RCX, X64_RCX);
-                    emit_byte(&e, rex(1, 0, 0, 0)); emit_byte(&e, 0x0F); emit_byte(&e, 0xAF);
-                    emit_byte(&e, modrm(0x03, X64_RAX, X64_RCX));
-                    emit_byte(&e, rex(1, 0, 0, 0));
-                    emit_byte(&e, 0xC1); emit_byte(&e, modrm(0x03, 5, X64_RAX));
-                    emit_byte(&e, 32);
-                    break;
-                case 3: /* MULHU */
-                    emit_mul(&e, X64_RCX);
-                    emit_mov_rr(&e, X64_RAX, X64_RDX);
-                    break;
-                case 4: /* DIV */
-                    emit_test_rr(&e, X64_RCX, X64_RCX);
-                    emit_jcc_rel32(&e, JCC_NE);
-                    { uint32_t p1 = emit_pos(&e) - 4;
-                      emit_mov_r32_imm32(&e, X64_RAX, (uint32_t)-1);
-                      emit_jmp_rel32(&e);
-                      uint32_t p_end1 = emit_pos(&e) - 4;
-                      emit_patch_rel32(&e, p1, emit_pos(&e));
-                      emit_cmp_r_imm(&e, X64_RAX, (int32_t)0x80000000u);
-                      emit_jcc_rel32(&e, JCC_NE);
-                      uint32_t p2 = emit_pos(&e) - 4;
-                      emit_cmp_r_imm(&e, X64_RCX, -1);
-                      emit_jcc_rel32(&e, JCC_NE);
-                      uint32_t p3 = emit_pos(&e) - 4;
-                      emit_mov_r32_imm32(&e, X64_RAX, 0x80000000u);
-                      emit_jmp_rel32(&e);
-                      uint32_t p_end2 = emit_pos(&e) - 4;
-                      emit_patch_rel32(&e, p2, emit_pos(&e));
-                      emit_patch_rel32(&e, p3, emit_pos(&e));
-                      emit_cdq(&e);
-                      emit_idiv(&e, X64_RCX);
-                      emit_patch_rel32(&e, p_end1, emit_pos(&e));
-                      emit_patch_rel32(&e, p_end2, emit_pos(&e));
-                    }
-                    break;
-                case 5: /* DIVU */
-                    emit_test_rr(&e, X64_RCX, X64_RCX);
-                    emit_jcc_rel32(&e, JCC_NE);
-                    { uint32_t p1 = emit_pos(&e) - 4;
-                      emit_mov_r32_imm32(&e, X64_RAX, UINT32_MAX);
-                      emit_jmp_rel32(&e);
-                      uint32_t p_end = emit_pos(&e) - 4;
-                      emit_patch_rel32(&e, p1, emit_pos(&e));
-                      emit_xor_rr(&e, X64_RDX, X64_RDX);
-                      emit_div(&e, X64_RCX);
-                      emit_patch_rel32(&e, p_end, emit_pos(&e));
-                    }
-                    break;
-                case 6: /* REM */
-                    emit_test_rr(&e, X64_RCX, X64_RCX);
-                    emit_jcc_rel32(&e, JCC_NE);
-                    { uint32_t p1 = emit_pos(&e) - 4;
-                      emit_jmp_rel32(&e);
-                      uint32_t p_end1 = emit_pos(&e) - 4;
-                      emit_patch_rel32(&e, p1, emit_pos(&e));
-                      emit_cmp_r_imm(&e, X64_RAX, (int32_t)0x80000000u);
-                      emit_jcc_rel32(&e, JCC_NE);
-                      uint32_t p2 = emit_pos(&e) - 4;
-                      emit_cmp_r_imm(&e, X64_RCX, -1);
-                      emit_jcc_rel32(&e, JCC_NE);
-                      uint32_t p3 = emit_pos(&e) - 4;
-                      emit_xor_rr(&e, X64_RAX, X64_RAX);
-                      emit_jmp_rel32(&e);
-                      uint32_t p_end2 = emit_pos(&e) - 4;
-                      emit_patch_rel32(&e, p2, emit_pos(&e));
-                      emit_patch_rel32(&e, p3, emit_pos(&e));
-                      emit_cdq(&e);
-                      emit_idiv(&e, X64_RCX);
-                      emit_mov_rr(&e, X64_RAX, X64_RDX);
-                      emit_patch_rel32(&e, p_end1, emit_pos(&e));
-                      emit_patch_rel32(&e, p_end2, emit_pos(&e));
-                    }
-                    break;
-                case 7: /* REMU */
-                    emit_test_rr(&e, X64_RCX, X64_RCX);
-                    emit_jcc_rel32(&e, JCC_NE);
-                    { uint32_t p1 = emit_pos(&e) - 4;
-                      emit_jmp_rel32(&e);
-                      uint32_t p_end = emit_pos(&e) - 4;
-                      emit_patch_rel32(&e, p1, emit_pos(&e));
-                      emit_xor_rr(&e, X64_RDX, X64_RDX);
-                      emit_div(&e, X64_RCX);
-                      emit_mov_rr(&e, X64_RAX, X64_RDX);
-                      emit_patch_rel32(&e, p_end, emit_pos(&e));
-                    }
-                    break;
-                }
-                if (insn.rd)
-                    rc_store(&e, &rc, insn.rd, X64_RAX);
-            } else {
-                /* Base ALU — direct register allocation */
-                int rs1 = rc_read(&e, &rc, insn.rs1);
-                int rs2 = rc_read(&e, &rc, insn.rs2);
-                int rd = insn.rd ? rc_write(&e, &rc, insn.rd) : X64_RAX;
-
-                switch (insn.funct3) {
-                case ALU_ADD:
-                    if (rd == rs1) {
-                        if (insn.funct7 & 0x20) emit_sub_rr(&e, rd, rs2);
-                        else emit_add_rr(&e, rd, rs2);
-                    } else if (rd == rs2) {
-                        if (insn.funct7 & 0x20) {
-                            /* SUB with rd == rs2: can't mov rd,rs1 then sub rd,rs2
-                             * because mov clobbers rs2.  Use neg+add instead:
-                             * rd = -rs2; rd += rs1 → rd = rs1 - rs2 */
-                            emit_neg(&e, rd);
-                            emit_add_rr(&e, rd, rs1);
-                        } else {
-                            emit_add_rr(&e, rd, rs1); /* ADD commutative */
-                        }
-                    } else {
-                        emit_mov_rr(&e, rd, rs1);
-                        if (insn.funct7 & 0x20) emit_sub_rr(&e, rd, rs2);
-                        else emit_add_rr(&e, rd, rs2);
-                    }
-                    break;
-                case ALU_SLL:
-                    emit_mov_rr(&e, X64_RCX, rs2); /* shift amount must be in CL */
-                    if (rd != rs1) emit_mov_rr(&e, rd, rs1);
-                    emit_shl_r_cl(&e, rd);
-                    break;
-                case ALU_SLT:
-                    emit_cmp_rr(&e, rs1, rs2);
-                    emit_setcc(&e, SETCC_L, X64_RAX);
-                    emit_movzx_r32_r8(&e, rd, X64_RAX);
-                    break;
-                case ALU_SLTU:
-                    emit_cmp_rr(&e, rs1, rs2);
-                    emit_setcc(&e, SETCC_B, X64_RAX);
-                    emit_movzx_r32_r8(&e, rd, X64_RAX);
-                    break;
-                case ALU_XOR:
-                    if (rd == rs1) emit_xor_rr_op(&e, rd, rs2);
-                    else if (rd == rs2) emit_xor_rr_op(&e, rd, rs1);
-                    else { emit_mov_rr(&e, rd, rs1); emit_xor_rr_op(&e, rd, rs2); }
-                    break;
-                case ALU_SRL:
-                    emit_mov_rr(&e, X64_RCX, rs2);
-                    if (rd != rs1) emit_mov_rr(&e, rd, rs1);
-                    if (insn.funct7 & 0x20) emit_sar_r_cl(&e, rd);
-                    else emit_shr_r_cl(&e, rd);
-                    break;
-                case ALU_OR:
-                    if (rd == rs1) emit_or_rr(&e, rd, rs2);
-                    else if (rd == rs2) emit_or_rr(&e, rd, rs1);
-                    else { emit_mov_rr(&e, rd, rs1); emit_or_rr(&e, rd, rs2); }
-                    break;
-                case ALU_AND:
-                    if (rd == rs1) emit_and_rr(&e, rd, rs2);
-                    else if (rd == rs2) emit_and_rr(&e, rd, rs1);
-                    else { emit_mov_rr(&e, rd, rs1); emit_and_rr(&e, rd, rs2); }
-                    break;
-                }
-            }
-            pc += 4;
-            break;
-        }
-
-        case OP_FENCE:
-            pc += 4;
-            break;
 
         case OP_SYSTEM:
             pc += 4;
@@ -1128,6 +1232,10 @@ done:
     uint8_t *code = dbt->code_buf + dbt->code_used;
     dbt->code_used += e.offset;
     dbt->blocks_translated++;
+    if (num_side_exits > 0) {
+        dbt->superblock_count++;
+        dbt->side_exits_total += num_side_exits;
+    }
 
     return code;
 }

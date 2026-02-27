@@ -86,6 +86,10 @@ int main(int argc, char *argv[]) {
                     (unsigned long long)dbt.cache_hits,
                     (unsigned long long)dbt.cache_misses);
             fprintf(stderr, "  code buffer used: %u bytes\n", dbt.code_used);
+            fprintf(stderr, "  superblocks: %llu (%llu side exits, %llu diamond merges)\n",
+                    (unsigned long long)dbt.superblock_count,
+                    (unsigned long long)dbt.side_exits_total,
+                    (unsigned long long)dbt.diamond_merges);
             if (dbt.intrinsic_memcpy || dbt.intrinsic_memset ||
                 dbt.intrinsic_memmove || dbt.intrinsic_strlen) {
                 fprintf(stderr, "  intrinsics:");

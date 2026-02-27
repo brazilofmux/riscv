@@ -55,6 +55,9 @@ typedef struct {
     uint64_t cache_misses;
     uint64_t ras_hits;
     uint64_t ras_misses;
+    uint64_t superblock_count;
+    uint64_t side_exits_total;
+    uint64_t diamond_merges;
 
     /* Intrinsic function addresses (0 = not found) */
     uint32_t intrinsic_memcpy;
