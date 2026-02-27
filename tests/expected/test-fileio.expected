@@ -1,0 +1,10 @@
+--- fileio tests ---
+PASS: fopen write
+PASS: fwrite all bytes
+PASS: fopen read
+PASS: file round-trip
+PASS: fopen for fgets
+PASS: fgets line 1
+PASS: fgets line 2
+
+7 passed, 0 failed

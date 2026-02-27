@@ -1,0 +1,9 @@
+--- malloc tests ---
+PASS: malloc non-null
+PASS: malloc read/write
+PASS: free no crash
+PASS: calloc non-null
+PASS: calloc zeroed
+PASS: realloc preserves data
+
+6 passed, 0 failed

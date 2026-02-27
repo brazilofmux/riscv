@@ -1,0 +1,13 @@
+--- printf tests ---
+PASS: snprintf %%d
+PASS: snprintf %%d negative
+PASS: snprintf %%u max
+PASS: snprintf %%x
+PASS: snprintf %%08X
+PASS: snprintf %%s
+PASS: snprintf %%c
+PASS: snprintf width
+PASS: snprintf left-align
+PASS: snprintf %%p
+
+10 passed, 0 failed

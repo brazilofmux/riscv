@@ -1,0 +1,10 @@
+--- setjmp tests ---
+PASS: setjmp returns 0
+PASS: longjmp value 42
+PASS: longjmp(env,0) returns 1
+PASS: nested longjmp value
+PASS: nested depth reached
+PASS: multiple longjmp cycles value
+PASS: multiple longjmp cycles count
+
+7 passed, 0 failed

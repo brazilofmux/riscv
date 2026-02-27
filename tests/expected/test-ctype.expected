@@ -1,0 +1,14 @@
+--- ctype tests ---
+PASS: isalpha A
+PASS: isalpha z
+PASS: !isalpha 5
+PASS: isdigit 0
+PASS: isdigit 9
+PASS: !isdigit a
+PASS: isspace space
+PASS: isspace newline
+PASS: !isspace a
+PASS: toupper
+PASS: tolower
+
+11 passed, 0 failed

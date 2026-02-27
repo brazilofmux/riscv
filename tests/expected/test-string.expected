@@ -1,0 +1,19 @@
+--- string tests ---
+PASS: strlen
+PASS: strlen empty
+PASS: strcpy+strcmp
+PASS: strncpy
+PASS: strcat
+PASS: strcmp eq
+PASS: strcmp lt
+PASS: strcmp gt
+PASS: memset
+PASS: memmove overlap
+PASS: memcmp eq
+PASS: memcmp lt
+PASS: strchr found
+PASS: strchr not found
+PASS: strstr found
+PASS: strstr not found
+
+16 passed, 0 failed

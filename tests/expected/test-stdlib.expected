@@ -1,0 +1,11 @@
+--- stdlib tests ---
+PASS: abs negative
+PASS: abs positive
+PASS: atoi positive
+PASS: atoi negative
+PASS: atoi zero
+PASS: strtol hex
+PASS: strtol negative
+PASS: qsort
+
+8 passed, 0 failed

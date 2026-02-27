@@ -6,7 +6,7 @@ LDFLAGS =
 RISCV_CC = riscv64-unknown-elf-gcc
 RISCV_CFLAGS = -march=rv32im -mabi=ilp32 -nostdlib -O2
 
-.PHONY: all clean dbt runtime
+.PHONY: all clean dbt runtime test
 
 all: dbt
 
@@ -16,6 +16,11 @@ dbt:
 runtime:
 	$(MAKE) -C runtime
 
+test: dbt runtime
+	$(MAKE) -C tests
+	bash tests/run-tests.sh
+
 clean:
 	$(MAKE) -C dbt clean
 	$(MAKE) -C runtime clean
+	$(MAKE) -C tests clean
