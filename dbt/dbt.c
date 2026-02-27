@@ -513,41 +513,20 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
 
     case OP_LOAD: {
         int rs1 = rc_read(e, rc, insn->rs1);
-        emit_mov_rr(e, X64_RAX, rs1);
-        emit_add_r_imm(e, X64_RAX, insn->imm);
         int rd = insn->rd ? rc_write(e, rc, insn->rd) : X64_RCX;
         switch (insn->funct3) {
-        case LD_LW:
-            emit_load_mem32(e, rd, X64_RAX);
-            break;
-        case LD_LH:
-            emit_load_mem16(e, rd, X64_RAX);
-            emit_movsx_r32_r16(e, rd, rd);
-            break;
-        case LD_LHU:
-            emit_load_mem16(e, rd, X64_RAX);
-            if (reg_hi(rd))
-                emit_byte(e, rex(0, reg_hi(rd), 0, reg_hi(rd)));
-            emit_byte(e, 0x0F); emit_byte(e, 0xB7);
-            emit_byte(e, modrm(0x03, rd, rd));
-            break;
-        case LD_LB:
-            emit_load_mem8u(e, rd, X64_RAX);
-            emit_movsx_r32_r8(e, rd, rd);
-            break;
-        case LD_LBU:
-            emit_load_mem8u(e, rd, X64_RAX);
-            break;
-        default:
-            return -1;
+        case LD_LW:  emit_load_mem32(e, rd, rs1, insn->imm);  break;
+        case LD_LH:  emit_load_mem16s(e, rd, rs1, insn->imm); break;
+        case LD_LHU: emit_load_mem16u(e, rd, rs1, insn->imm); break;
+        case LD_LB:  emit_load_mem8s(e, rd, rs1, insn->imm);  break;
+        case LD_LBU: emit_load_mem8u(e, rd, rs1, insn->imm);  break;
+        default: return -1;
         }
         return 0;
     }
 
     case OP_STORE: {
         int rs1 = rc_read(e, rc, insn->rs1);
-        emit_mov_rr(e, X64_RAX, rs1);
-        emit_add_r_imm(e, X64_RAX, insn->imm);
         int rs2;
         if (insn->rs2 == 0) {
             emit_xor_rr(e, X64_RCX, X64_RCX);
@@ -556,9 +535,9 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
             rs2 = rc_read(e, rc, insn->rs2);
         }
         switch (insn->funct3) {
-        case ST_SW: emit_store_mem32(e, X64_RAX, rs2); break;
-        case ST_SH: emit_store_mem16(e, X64_RAX, rs2); break;
-        case ST_SB: emit_store_mem8(e, X64_RAX, rs2); break;
+        case ST_SW: emit_store_mem32(e, rs1, rs2, insn->imm); break;
+        case ST_SH: emit_store_mem16(e, rs1, rs2, insn->imm); break;
+        case ST_SB: emit_store_mem8(e, rs1, rs2, insn->imm); break;
         default: return -1;
         }
         return 0;

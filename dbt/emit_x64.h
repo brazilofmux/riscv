@@ -458,58 +458,76 @@ static inline void emit_imul_1(emit_t *e, int reg) {
     emit_byte(e, modrm(0x03, 5, reg));
 }
 
-/* Memory access: mov r32, [r64_base + r64_index] (with R12 as memory base) */
-/* mov r32, [R12 + rX] (32-bit load from guest memory) */
-static inline void emit_load_mem32(emit_t *e, int dst, int addr_reg) {
-    /* REX prefix: R12 needs REX.B, addr_reg may need REX.X */
-    emit_byte(e, rex(0, reg_hi(dst), reg_hi(addr_reg), 1));  /* REX.B=1 for R12 */
-    emit_byte(e, 0x8B);
-    emit_byte(e, modrm(0x00, dst, 0x04));  /* SIB follows */
-    emit_byte(e, (uint8_t)((reg_lo(addr_reg) << 3) | reg_lo(X64_R12)));  /* SIB: index=addr_reg, base=R12 */
+/* Shared SIB+displacement encoding for [R12 + index + disp] addressing.
+ * mod_reg is the ModRM reg field (dst for loads, src for stores).
+ * index_reg must not have reg_lo==4 (RSP), which our cache regs never do. */
+static inline void emit_sib_disp(emit_t *e, int mod_reg, int index_reg, int32_t disp) {
+    int mod = (disp == 0) ? 0x00 : (disp >= -128 && disp <= 127) ? 0x01 : 0x02;
+    emit_byte(e, modrm(mod, mod_reg, 0x04));  /* rm=100 → SIB follows */
+    emit_byte(e, (uint8_t)((reg_lo(index_reg) << 3) | reg_lo(X64_R12)));
+    if (mod == 0x01) emit_byte(e, (uint8_t)(int8_t)disp);
+    else if (mod == 0x02) emit_u32(e, (uint32_t)disp);
 }
 
-/* mov r16, [R12 + rX] (16-bit load) */
-static inline void emit_load_mem16(emit_t *e, int dst, int addr_reg) {
-    emit_byte(e, 0x66);  /* operand size prefix */
-    emit_byte(e, rex(0, reg_hi(dst), reg_hi(addr_reg), 1));
+/* mov r32, [R12 + idx + disp] */
+static inline void emit_load_mem32(emit_t *e, int dst, int idx, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(dst), reg_hi(idx), 1));
     emit_byte(e, 0x8B);
-    emit_byte(e, modrm(0x00, dst, 0x04));
-    emit_byte(e, (uint8_t)((reg_lo(addr_reg) << 3) | reg_lo(X64_R12)));
+    emit_sib_disp(e, dst, idx, disp);
 }
 
-/* movzx r32, byte [R12 + rX] (8-bit zero-extend load) */
-static inline void emit_load_mem8u(emit_t *e, int dst, int addr_reg) {
-    emit_byte(e, rex(0, reg_hi(dst), reg_hi(addr_reg), 1));
+/* movsx r32, word [R12 + idx + disp] */
+static inline void emit_load_mem16s(emit_t *e, int dst, int idx, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(dst), reg_hi(idx), 1));
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0xBF);
+    emit_sib_disp(e, dst, idx, disp);
+}
+
+/* movzx r32, word [R12 + idx + disp] */
+static inline void emit_load_mem16u(emit_t *e, int dst, int idx, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(dst), reg_hi(idx), 1));
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0xB7);
+    emit_sib_disp(e, dst, idx, disp);
+}
+
+/* movsx r32, byte [R12 + idx + disp] */
+static inline void emit_load_mem8s(emit_t *e, int dst, int idx, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(dst), reg_hi(idx), 1));
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0xBE);
+    emit_sib_disp(e, dst, idx, disp);
+}
+
+/* movzx r32, byte [R12 + idx + disp] */
+static inline void emit_load_mem8u(emit_t *e, int dst, int idx, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(dst), reg_hi(idx), 1));
     emit_byte(e, 0x0F);
     emit_byte(e, 0xB6);
-    emit_byte(e, modrm(0x00, dst, 0x04));
-    emit_byte(e, (uint8_t)((reg_lo(addr_reg) << 3) | reg_lo(X64_R12)));
+    emit_sib_disp(e, dst, idx, disp);
 }
 
-/* mov [R12 + rX], r32 (32-bit store to guest memory) */
-static inline void emit_store_mem32(emit_t *e, int addr_reg, int src) {
-    emit_byte(e, rex(0, reg_hi(src), reg_hi(addr_reg), 1));
+/* mov [R12 + idx + disp], r32 */
+static inline void emit_store_mem32(emit_t *e, int idx, int src, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(src), reg_hi(idx), 1));
     emit_byte(e, 0x89);
-    emit_byte(e, modrm(0x00, src, 0x04));
-    emit_byte(e, (uint8_t)((reg_lo(addr_reg) << 3) | reg_lo(X64_R12)));
+    emit_sib_disp(e, src, idx, disp);
 }
 
-/* mov [R12 + rX], r16 (16-bit store) */
-static inline void emit_store_mem16(emit_t *e, int addr_reg, int src) {
+/* mov word [R12 + idx + disp], r16 */
+static inline void emit_store_mem16(emit_t *e, int idx, int src, int32_t disp) {
     emit_byte(e, 0x66);
-    emit_byte(e, rex(0, reg_hi(src), reg_hi(addr_reg), 1));
+    emit_byte(e, rex(0, reg_hi(src), reg_hi(idx), 1));
     emit_byte(e, 0x89);
-    emit_byte(e, modrm(0x00, src, 0x04));
-    emit_byte(e, (uint8_t)((reg_lo(addr_reg) << 3) | reg_lo(X64_R12)));
+    emit_sib_disp(e, src, idx, disp);
 }
 
-/* mov [R12 + rX], r8 (8-bit store) */
-static inline void emit_store_mem8(emit_t *e, int addr_reg, int src) {
-    /* Need REX for consistent register encoding (SPL, BPL, etc.) */
-    emit_byte(e, rex(0, reg_hi(src), reg_hi(addr_reg), 1));
+/* mov byte [R12 + idx + disp], r8 */
+static inline void emit_store_mem8(emit_t *e, int idx, int src, int32_t disp) {
+    emit_byte(e, rex(0, reg_hi(src), reg_hi(idx), 1));
     emit_byte(e, 0x88);
-    emit_byte(e, modrm(0x00, src, 0x04));
-    emit_byte(e, (uint8_t)((reg_lo(addr_reg) << 3) | reg_lo(X64_R12)));
+    emit_sib_disp(e, src, idx, disp);
 }
 
 /* jmp rel32 */
