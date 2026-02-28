@@ -18,6 +18,8 @@ typedef struct {
     uint32_t next_pc;        /* set by translated block exits */
     uint32_t ras[RAS_SIZE];  /* return address stack predictions */
     uint32_t ras_top;        /* RAS circular buffer index */
+    uint64_t f[32];          /* FP registers (NaN-boxed: f32 in low 32 + 0xFFFFFFFF upper) */
+    uint32_t fcsr;           /* FP control/status: frm[7:5], fflags[4:0] */
 } rv32_ctx_t;
 
 /* Block cache entry — exactly 16 bytes for inline JIT lookup.

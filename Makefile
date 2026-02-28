@@ -4,7 +4,7 @@ LDFLAGS =
 
 # Cross-compiler for guest programs
 RISCV_CC = riscv64-unknown-elf-gcc
-RISCV_CFLAGS = -march=rv32im -mabi=ilp32 -nostdlib -O2
+RISCV_CFLAGS = -march=rv32imfd -mabi=ilp32d -nostdlib -O2
 
 .PHONY: all clean dbt runtime test
 

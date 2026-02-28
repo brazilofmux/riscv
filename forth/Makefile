@@ -2,7 +2,7 @@
 RISCV_AS = riscv64-unknown-elf-as
 RISCV_LD = riscv64-unknown-elf-ld
 
-ASFLAGS = -march=rv32im -mabi=ilp32
+ASFLAGS = -march=rv32imfd -mabi=ilp32d
 LDFLAGS = -T ../runtime/link.ld -m elf32lriscv
 
 .PHONY: all clean run

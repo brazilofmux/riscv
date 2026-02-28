@@ -1,17 +1,17 @@
-# CLAUDE.md - RV32IM Microcontroller DBT
+# CLAUDE.md - RV32IMFD Microcontroller DBT
 
 ## What This Is
 
-A lightweight, high-performance dynamic binary translator for **RV32IM** (RISC-V 32-bit, Integer + Multiply/Divide) targeting microcontroller-class binaries. Think of it as a fast, portable execution environment: compile your C/C++ code for RV32IM, run it at near-native speed on any host (x86-64, ARM64, RISC-V64).
+A lightweight, high-performance dynamic binary translator for **RV32IMFD** (RISC-V 32-bit, Integer + Multiply/Divide + Single/Double Float) targeting microcontroller-class binaries. Think of it as a fast, portable execution environment: compile your C/C++ code for RV32IMFD, run it at near-native speed on any host (x86-64, ARM64, RISC-V64).
 
 This project is a spiritual successor to the SLOW-32 project at `~/slow-32`. All the techniques and lessons from that project apply here, but we use the standard RISC-V toolchain instead of a custom one.
 
 ## Why This Exists
 
-- **No custom toolchain needed** — uses upstream GCC/clang with `-march=rv32im -mabi=ilp32`
+- **No custom toolchain needed** — uses upstream GCC/clang with `-march=rv32imfd -mabi=ilp32d`
 - **No QEMU needed** — purpose-built DBT is ~1.5-2x faster on sustained workloads and much faster to start
 - **Tiny footprint** — the DBT + runtime is all you ship. No build tree, no dependencies beyond a host C compiler
-- **Portable binaries** — one RV32IM ELF runs on every platform the DBT supports
+- **Portable binaries** — one RV32IMFD ELF runs on every platform the DBT supports
 - **ECALL service model** — clean host interface via Linux-style syscall numbers
 
 ## Architecture
@@ -44,18 +44,18 @@ Guest programs invoke host services through the RISC-V `ecall` instruction using
 | 502 | term_kbhit | returns 1 if key available, 0 otherwise |
 
 ### Binary Validation
-The DBT accepts standard RV32IM ELF binaries but validates:
+The DBT accepts standard RV32IMFD ELF binaries but validates:
 - Must be ELF32, little-endian, machine EM_RISCV
 - Must be RV32 (ELF flags)
-- No privileged instructions (CSR, ECALL/EBREAK used only for service calls)
+- No privileged instructions (CSR used only for fcsr/fflags/frm, ECALL/EBREAK for service calls)
 - No atomics (A extension) unless we choose to support them later
-- F/D extensions: optional, can be added incrementally
 
 ### DBT Pipeline
 1. **ELF Loader** (`elf_loader.c`) — parse ELF, map segments, validate RV32IM, extract symbol table
 2. **Decoder** (`decoder.h`) — inline RV32IM instruction decoder
 3. **Translator** (`dbt.c`) — guest-to-host code generation with:
-   - 8-slot LRU register cache (RSI, RDI, R8-R11, R14, R15)
+   - 8-slot LRU integer register cache (RSI, RDI, R8-R11, R14, R15)
+   - FP translation via XMM0/XMM1 scratch (NaN-boxed single, native double)
    - Instruction fusion (LUI+ADDI, AUIPC+ADDI, AUIPC+JALR, AUIPC+load/store, SLT+branch)
    - Self-loop optimization with warm entry (register pressure guarded)
    - Diamond merge for short forward branches (up to 16 bytes)
@@ -73,9 +73,9 @@ The DBT accepts standard RV32IM ELF binaries but validates:
 - RAX, RCX, RDX = scratch (used by mul/div, cache probes)
 - RSI, RDI, R8-R11, R14, R15 = register cache slots
 
-## RV32IM Quick Reference
+## RV32IMFD Quick Reference
 
-### Registers (32 x 32-bit)
+### Integer Registers (32 x 32-bit)
 - x0 = zero (hardwired)
 - x1 = ra (return address)
 - x2 = sp (stack pointer)
@@ -88,6 +88,14 @@ The DBT accepts standard RV32IM ELF binaries but validates:
 - x12-x17 = a2-a7 (args)
 - x18-x27 = s2-s11 (callee-saved)
 - x28-x31 = t3-t6 (temporaries)
+
+### FP Registers (32 x 64-bit, NaN-boxed for single-precision)
+- f0-f7 = ft0-ft7 (FP temporaries)
+- f8-f9 = fs0-fs1 (FP callee-saved)
+- f10-f11 = fa0-fa1 (FP args/return values)
+- f12-f17 = fa2-fa7 (FP args)
+- f18-f27 = fs2-fs11 (FP callee-saved)
+- f28-f31 = ft8-ft11 (FP temporaries)
 
 ### Instruction Formats
 - R-type: register-register (ADD, SUB, MUL, DIV, etc.)
@@ -149,7 +157,7 @@ make -C dbt
 make -C runtime
 
 # Compile a guest program
-riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -ffreestanding -nostdlib \
+riscv64-unknown-elf-gcc -march=rv32imfd -mabi=ilp32d -O2 -ffreestanding -nostdlib \
     -Iruntime/include examples/hello.c -T runtime/link.ld \
     runtime/crt0.o runtime/libc.a -lgcc -o hello.elf
 
@@ -220,5 +228,7 @@ Intentional stubs (acceptable for microcontroller profile): directory ops, sleep
 - [x] Diamond merge for short forward branches
 - [x] ECALL service layer (15 syscalls)
 - [x] Runtime libc (20 modules, 21 headers)
-- [x] 7 ported programs, 225+ tests passing
+- [x] RV32F/D floating-point extensions (interpreter + JIT)
+- [x] FP test suite (50 tests)
+- [x] 8 ported programs, 280+ tests passing
 - [ ] Benchmark vs QEMU

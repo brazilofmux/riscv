@@ -8,6 +8,8 @@ typedef struct {
     uint32_t x[32];     /* general-purpose registers (x[0] always 0) */
     uint32_t pc;        /* program counter */
     uint64_t insn_count;/* instructions executed */
+    uint64_t f[32];     /* FP registers (NaN-boxed: f32 in low 32 + 0xFFFFFFFF upper) */
+    uint32_t fcsr;      /* FP control/status: frm[7:5], fflags[4:0] */
 } rv32_state_t;
 
 /*

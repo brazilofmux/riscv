@@ -647,6 +647,8 @@ static inline void emit_mov_r64_imm64(emit_t *e, int reg, uint64_t imm) {
 #define CTX_NEXT_PC_OFF   128   /* x[32] = 128 bytes, then next_pc */
 #define CTX_RAS_OFF       132   /* next_pc + 4 = 132, ras[0..31] */
 #define CTX_RAS_TOP_OFF   260   /* 132 + 32*4 = 260, ras_top */
+#define CTX_FP_OFF        264   /* ras_top + 4 = 264, f[0..31] x 8 bytes */
+#define CTX_FCSR_OFF      520   /* 264 + 256 = 520 */
 
 static inline void emit_exit_with_pc(emit_t *e, uint32_t next_pc) {
     /* mov dword [rbx + CTX_NEXT_PC_OFF], imm32 */
@@ -668,6 +670,303 @@ static inline void emit_add_r64_r64(emit_t *e, int dst, int src) {
 static inline void emit_call_rax(emit_t *e) {
     emit_byte(e, 0xFF);
     emit_byte(e, 0xD0);  /* ModRM: mod=11, /2, rm=RAX */
+}
+
+/* ---- SSE/FP emitter functions for RV32F/D ---- */
+
+/* XMM register indices (0-15, we use 0 and 1 as scratch) */
+#define XMM0  0
+#define XMM1  1
+
+/*
+ * FP context access: load/store from ctx->f[freg] via RBX.
+ * Each f[] slot is 8 bytes (uint64_t), at offset CTX_FP_OFF + freg*8.
+ */
+
+/* movss xmm, [rbx + CTX_FP_OFF + freg*8] — load single from FP context */
+static inline void emit_load_fp_s(emit_t *e, int xmm, int freg) {
+    int off = CTX_FP_OFF + freg * 8;
+    emit_byte(e, 0xF3); /* prefix for scalar single */
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0x10); /* movss xmm, m32 */
+    if (off <= 127) {
+        emit_byte(e, modrm(0x01, xmm, X64_RBX));
+        emit_byte(e, (uint8_t)off);
+    } else {
+        emit_byte(e, modrm(0x02, xmm, X64_RBX));
+        emit_u32(e, (uint32_t)off);
+    }
+}
+
+/* Store single to FP context with NaN-boxing: upper 32 bits = 0xFFFFFFFF.
+ * movss [rbx + off], xmm; mov dword [rbx + off + 4], 0xFFFFFFFF */
+static inline void emit_store_fp_s(emit_t *e, int freg, int xmm) {
+    int off = CTX_FP_OFF + freg * 8;
+    /* movss [rbx + off], xmm */
+    emit_byte(e, 0xF3);
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0x11); /* movss m32, xmm */
+    if (off <= 127) {
+        emit_byte(e, modrm(0x01, xmm, X64_RBX));
+        emit_byte(e, (uint8_t)off);
+    } else {
+        emit_byte(e, modrm(0x02, xmm, X64_RBX));
+        emit_u32(e, (uint32_t)off);
+    }
+    /* NaN-box: mov dword [rbx + off + 4], 0xFFFFFFFF */
+    emit_byte(e, 0xC7);
+    emit_byte(e, modrm(0x02, 0, X64_RBX));
+    emit_u32(e, (uint32_t)(off + 4));
+    emit_u32(e, 0xFFFFFFFF);
+}
+
+/* movsd xmm, [rbx + CTX_FP_OFF + freg*8] — load double from FP context */
+static inline void emit_load_fp_d(emit_t *e, int xmm, int freg) {
+    int off = CTX_FP_OFF + freg * 8;
+    emit_byte(e, 0xF2); /* prefix for scalar double */
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0x10); /* movsd xmm, m64 */
+    if (off <= 127) {
+        emit_byte(e, modrm(0x01, xmm, X64_RBX));
+        emit_byte(e, (uint8_t)off);
+    } else {
+        emit_byte(e, modrm(0x02, xmm, X64_RBX));
+        emit_u32(e, (uint32_t)off);
+    }
+}
+
+/* movsd [rbx + CTX_FP_OFF + freg*8], xmm — store double to FP context */
+static inline void emit_store_fp_d(emit_t *e, int freg, int xmm) {
+    int off = CTX_FP_OFF + freg * 8;
+    emit_byte(e, 0xF2);
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0x11); /* movsd m64, xmm */
+    if (off <= 127) {
+        emit_byte(e, modrm(0x01, xmm, X64_RBX));
+        emit_byte(e, (uint8_t)off);
+    } else {
+        emit_byte(e, modrm(0x02, xmm, X64_RBX));
+        emit_u32(e, (uint32_t)off);
+    }
+}
+
+/* FP memory access: load/store via [R12 + idx + disp] (guest memory) */
+
+/* movss xmm, [R12 + idx + disp] — load float from guest memory */
+static inline void emit_load_mem_f32(emit_t *e, int xmm, int idx, int32_t disp) {
+    emit_byte(e, 0xF3);
+    emit_byte(e, rex(0, 0, reg_hi(idx), 1));
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0x10);
+    emit_sib_disp(e, xmm, idx, disp);
+}
+
+/* movss [R12 + idx + disp], xmm — store float to guest memory */
+static inline void emit_store_mem_f32(emit_t *e, int idx, int xmm, int32_t disp) {
+    emit_byte(e, 0xF3);
+    emit_byte(e, rex(0, 0, reg_hi(idx), 1));
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0x11);
+    emit_sib_disp(e, xmm, idx, disp);
+}
+
+/* movsd xmm, [R12 + idx + disp] — load double from guest memory */
+static inline void emit_load_mem_f64(emit_t *e, int xmm, int idx, int32_t disp) {
+    emit_byte(e, 0xF2);
+    emit_byte(e, rex(0, 0, reg_hi(idx), 1));
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0x10);
+    emit_sib_disp(e, xmm, idx, disp);
+}
+
+/* movsd [R12 + idx + disp], xmm — store double to guest memory */
+static inline void emit_store_mem_f64(emit_t *e, int idx, int xmm, int32_t disp) {
+    emit_byte(e, 0xF2);
+    emit_byte(e, rex(0, 0, reg_hi(idx), 1));
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0x11);
+    emit_sib_disp(e, xmm, idx, disp);
+}
+
+/* ---- SSE scalar arithmetic (xmm, xmm) ---- */
+
+/* Helper: emit prefix + 0F + opcode + modrm for SSE scalar single (F3 prefix) */
+static inline void emit_sse_ss(emit_t *e, uint8_t op, int dst, int src) {
+    emit_byte(e, 0xF3); emit_byte(e, 0x0F); emit_byte(e, op);
+    emit_byte(e, modrm(0x03, dst, src));
+}
+
+/* Helper: emit prefix + 0F + opcode + modrm for SSE scalar double (F2 prefix) */
+static inline void emit_sse_sd(emit_t *e, uint8_t op, int dst, int src) {
+    emit_byte(e, 0xF2); emit_byte(e, 0x0F); emit_byte(e, op);
+    emit_byte(e, modrm(0x03, dst, src));
+}
+
+static inline void emit_addss(emit_t *e, int d, int s) { emit_sse_ss(e, 0x58, d, s); }
+static inline void emit_subss(emit_t *e, int d, int s) { emit_sse_ss(e, 0x5C, d, s); }
+static inline void emit_mulss(emit_t *e, int d, int s) { emit_sse_ss(e, 0x59, d, s); }
+static inline void emit_divss(emit_t *e, int d, int s) { emit_sse_ss(e, 0x5E, d, s); }
+static inline void emit_sqrtss(emit_t *e, int d, int s) { emit_sse_ss(e, 0x51, d, s); }
+static inline void emit_minss(emit_t *e, int d, int s) { emit_sse_ss(e, 0x5D, d, s); }
+static inline void emit_maxss(emit_t *e, int d, int s) { emit_sse_ss(e, 0x5F, d, s); }
+
+static inline void emit_addsd(emit_t *e, int d, int s) { emit_sse_sd(e, 0x58, d, s); }
+static inline void emit_subsd(emit_t *e, int d, int s) { emit_sse_sd(e, 0x5C, d, s); }
+static inline void emit_mulsd(emit_t *e, int d, int s) { emit_sse_sd(e, 0x59, d, s); }
+static inline void emit_divsd(emit_t *e, int d, int s) { emit_sse_sd(e, 0x5E, d, s); }
+static inline void emit_sqrtsd(emit_t *e, int d, int s) { emit_sse_sd(e, 0x51, d, s); }
+static inline void emit_minsd(emit_t *e, int d, int s) { emit_sse_sd(e, 0x5D, d, s); }
+static inline void emit_maxsd(emit_t *e, int d, int s) { emit_sse_sd(e, 0x5F, d, s); }
+
+/* ---- SSE comparisons ---- */
+
+/* ucomiss xmm, xmm (0F 2E) — sets EFLAGS */
+static inline void emit_ucomiss(emit_t *e, int xmm1, int xmm2) {
+    emit_byte(e, 0x0F); emit_byte(e, 0x2E);
+    emit_byte(e, modrm(0x03, xmm1, xmm2));
+}
+
+/* ucomisd xmm, xmm (66 0F 2E) — sets EFLAGS */
+static inline void emit_ucomisd(emit_t *e, int xmm1, int xmm2) {
+    emit_byte(e, 0x66); emit_byte(e, 0x0F); emit_byte(e, 0x2E);
+    emit_byte(e, modrm(0x03, xmm1, xmm2));
+}
+
+/* ---- SSE conversions ---- */
+
+/* cvtss2sd xmm, xmm (F3 0F 5A) */
+static inline void emit_cvtss2sd(emit_t *e, int d, int s) { emit_sse_ss(e, 0x5A, d, s); }
+
+/* cvtsd2ss xmm, xmm (F2 0F 5A) */
+static inline void emit_cvtsd2ss(emit_t *e, int d, int s) { emit_sse_sd(e, 0x5A, d, s); }
+
+/* cvtsi2ss xmm, r32 (F3 0F 2A) */
+static inline void emit_cvtsi2ss_r32(emit_t *e, int xmm, int r32) {
+    emit_byte(e, 0xF3);
+    if (reg_hi(r32)) emit_byte(e, rex(0, 0, 0, 1));
+    emit_byte(e, 0x0F); emit_byte(e, 0x2A);
+    emit_byte(e, modrm(0x03, xmm, r32));
+}
+
+/* cvtsi2sd xmm, r32 (F2 0F 2A) */
+static inline void emit_cvtsi2sd_r32(emit_t *e, int xmm, int r32) {
+    emit_byte(e, 0xF2);
+    if (reg_hi(r32)) emit_byte(e, rex(0, 0, 0, 1));
+    emit_byte(e, 0x0F); emit_byte(e, 0x2A);
+    emit_byte(e, modrm(0x03, xmm, r32));
+}
+
+/* cvttss2si r32, xmm (F3 0F 2C) — truncate toward zero */
+static inline void emit_cvttss2si_r32(emit_t *e, int r32, int xmm) {
+    emit_byte(e, 0xF3);
+    if (reg_hi(r32)) emit_byte(e, rex(0, 1, 0, 0));
+    emit_byte(e, 0x0F); emit_byte(e, 0x2C);
+    emit_byte(e, modrm(0x03, r32, xmm));
+}
+
+/* cvttsd2si r32, xmm (F2 0F 2C) — truncate toward zero */
+static inline void emit_cvttsd2si_r32(emit_t *e, int r32, int xmm) {
+    emit_byte(e, 0xF2);
+    if (reg_hi(r32)) emit_byte(e, rex(0, 1, 0, 0));
+    emit_byte(e, 0x0F); emit_byte(e, 0x2C);
+    emit_byte(e, modrm(0x03, r32, xmm));
+}
+
+/* cvtsi2ss xmm, r64 (F3 REX.W 0F 2A) — 64-bit int to float (for unsigned 32-bit) */
+static inline void emit_cvtsi2ss_r64(emit_t *e, int xmm, int r64) {
+    emit_byte(e, 0xF3);
+    emit_byte(e, rex(1, 0, 0, reg_hi(r64)));
+    emit_byte(e, 0x0F); emit_byte(e, 0x2A);
+    emit_byte(e, modrm(0x03, xmm, r64));
+}
+
+/* cvtsi2sd xmm, r64 (F2 REX.W 0F 2A) — 64-bit int to double (for unsigned 32-bit) */
+static inline void emit_cvtsi2sd_r64(emit_t *e, int xmm, int r64) {
+    emit_byte(e, 0xF2);
+    emit_byte(e, rex(1, 0, 0, reg_hi(r64)));
+    emit_byte(e, 0x0F); emit_byte(e, 0x2A);
+    emit_byte(e, modrm(0x03, xmm, r64));
+}
+
+/* cvttss2si r64, xmm (F3 REX.W 0F 2C) — for unsigned 32-bit result */
+static inline void emit_cvttss2si_r64(emit_t *e, int r64, int xmm) {
+    emit_byte(e, 0xF3);
+    emit_byte(e, rex(1, reg_hi(r64), 0, 0));
+    emit_byte(e, 0x0F); emit_byte(e, 0x2C);
+    emit_byte(e, modrm(0x03, r64, xmm));
+}
+
+/* cvttsd2si r64, xmm (F2 REX.W 0F 2C) — for unsigned 32-bit result */
+static inline void emit_cvttsd2si_r64(emit_t *e, int r64, int xmm) {
+    emit_byte(e, 0xF2);
+    emit_byte(e, rex(1, reg_hi(r64), 0, 0));
+    emit_byte(e, 0x0F); emit_byte(e, 0x2C);
+    emit_byte(e, modrm(0x03, r64, xmm));
+}
+
+/* ---- Bit transfer (FMV.W.X / FMV.X.W) ---- */
+
+/* movd xmm, r32 (66 0F 6E) */
+static inline void emit_movd_xmm_r32(emit_t *e, int xmm, int r32) {
+    emit_byte(e, 0x66);
+    if (reg_hi(r32)) emit_byte(e, rex(0, 0, 0, 1));
+    emit_byte(e, 0x0F); emit_byte(e, 0x6E);
+    emit_byte(e, modrm(0x03, xmm, r32));
+}
+
+/* movd r32, xmm (66 0F 7E) */
+static inline void emit_movd_r32_xmm(emit_t *e, int r32, int xmm) {
+    emit_byte(e, 0x66);
+    if (reg_hi(r32)) emit_byte(e, rex(0, 0, 0, 1));
+    emit_byte(e, 0x0F); emit_byte(e, 0x7E);
+    emit_byte(e, modrm(0x03, xmm, r32));
+}
+
+/* movq xmm, [rbx + off] — load 64-bit into xmm (F3 0F 7E) */
+static inline void emit_movq_xmm_ctx(emit_t *e, int xmm, int off) {
+    emit_byte(e, 0xF3);
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0x7E);
+    if (off <= 127) {
+        emit_byte(e, modrm(0x01, xmm, X64_RBX));
+        emit_byte(e, (uint8_t)off);
+    } else {
+        emit_byte(e, modrm(0x02, xmm, X64_RBX));
+        emit_u32(e, (uint32_t)off);
+    }
+}
+
+/* movq [rbx + off], xmm — store 64-bit from xmm (66 0F D6) */
+static inline void emit_movq_ctx_xmm(emit_t *e, int off, int xmm) {
+    emit_byte(e, 0x66);
+    emit_byte(e, 0x0F);
+    emit_byte(e, 0xD6);
+    if (off <= 127) {
+        emit_byte(e, modrm(0x01, xmm, X64_RBX));
+        emit_byte(e, (uint8_t)off);
+    } else {
+        emit_byte(e, modrm(0x02, xmm, X64_RBX));
+        emit_u32(e, (uint32_t)off);
+    }
+}
+
+/* xorps xmm, xmm — zero an XMM register (0F 57) */
+static inline void emit_xorps(emit_t *e, int d, int s) {
+    emit_byte(e, 0x0F); emit_byte(e, 0x57);
+    emit_byte(e, modrm(0x03, d, s));
+}
+
+/* xorpd xmm, xmm — XOR double (66 0F 57) */
+static inline void emit_xorpd(emit_t *e, int d, int s) {
+    emit_byte(e, 0x66); emit_byte(e, 0x0F); emit_byte(e, 0x57);
+    emit_byte(e, modrm(0x03, d, s));
+}
+
+/* movaps xmm, xmm (0F 28) */
+static inline void emit_movaps(emit_t *e, int d, int s) {
+    if (d == s) return;
+    emit_byte(e, 0x0F); emit_byte(e, 0x28);
+    emit_byte(e, modrm(0x03, d, s));
 }
 
 #endif /* EMIT_X64_H */

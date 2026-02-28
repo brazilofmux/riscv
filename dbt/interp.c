@@ -9,6 +9,43 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <poll.h>
+#include <math.h>
+
+/* ---- NaN-boxing helpers ---- */
+
+/* Single-precision values in f[] are NaN-boxed: upper 32 bits = 0xFFFFFFFF.
+ * If upper bits aren't all 1s, the value is treated as canonical NaN. */
+static inline float fp_unbox_s(uint64_t v) {
+    if ((v >> 32) != 0xFFFFFFFF) {
+        /* Not properly NaN-boxed: return canonical NaN */
+        float nan;
+        uint32_t cn = 0x7FC00000;
+        memcpy(&nan, &cn, 4);
+        return nan;
+    }
+    float f;
+    uint32_t lo = (uint32_t)v;
+    memcpy(&f, &lo, 4);
+    return f;
+}
+
+static inline uint64_t fp_box_s(float f) {
+    uint32_t bits;
+    memcpy(&bits, &f, 4);
+    return 0xFFFFFFFF00000000ULL | bits;
+}
+
+static inline double fp_unbox_d(uint64_t v) {
+    double d;
+    memcpy(&d, &v, 8);
+    return d;
+}
+
+static inline uint64_t fp_box_d(double d) {
+    uint64_t bits;
+    memcpy(&bits, &d, 8);
+    return bits;
+}
 
 /* Memory access helpers — little-endian */
 static inline uint32_t mem_read32(rv32_binary_t *bin, uint32_t addr) {
@@ -442,25 +479,444 @@ int rv32_interp_run(rv32_state_t *state, rv32_binary_t *bin) {
             break;
 
         case OP_SYSTEM:
-            if (insn.imm == 0) {
+            if (insn.imm == 0 && insn.funct3 == 0) {
                 /* ECALL */
                 state->pc = next_pc;
                 int rc = handle_ecall(state, bin);
                 if (rc != -2) return rc;
                 state->x[0] = 0;
                 continue;
-            } else if (insn.imm == 1) {
+            } else if (insn.imm == 1 && insn.funct3 == 0) {
                 /* EBREAK — treat as breakpoint/halt */
                 fprintf(stderr, "rv32-run: EBREAK at 0x%08X (%llu instructions)\n",
                         state->pc, (unsigned long long)state->insn_count);
                 return -1;
+            } else if (insn.funct3 >= 1 && insn.funct3 <= 3) {
+                /* CSR read/write: CSRRW(1), CSRRS(2), CSRRC(3) */
+                uint32_t csr_addr = insn.imm & 0xFFF;
+                uint32_t csr_val = 0;
+                switch (csr_addr) {
+                case 0x001: csr_val = state->fcsr & 0x1F; break;        /* fflags */
+                case 0x002: csr_val = (state->fcsr >> 5) & 0x7; break;  /* frm */
+                case 0x003: csr_val = state->fcsr & 0xFF; break;        /* fcsr */
+                default:
+                    fprintf(stderr, "rv32-run: unsupported CSR 0x%03X at 0x%08X\n",
+                            csr_addr, state->pc);
+                    return -1;
+                }
+                uint32_t new_val = csr_val;
+                uint32_t rs1_val = state->x[insn.rs1];
+                switch (insn.funct3) {
+                case 1: new_val = rs1_val; break;                /* CSRRW */
+                case 2: new_val = csr_val | rs1_val; break;      /* CSRRS */
+                case 3: new_val = csr_val & ~rs1_val; break;     /* CSRRC */
+                }
+                if (insn.rd) state->x[insn.rd] = csr_val;
+                switch (csr_addr) {
+                case 0x001: state->fcsr = (state->fcsr & ~0x1Fu) | (new_val & 0x1F); break;
+                case 0x002: state->fcsr = (state->fcsr & ~0xE0u) | ((new_val & 0x7) << 5); break;
+                case 0x003: state->fcsr = new_val & 0xFF; break;
+                }
+            } else if (insn.funct3 >= 5 && insn.funct3 <= 7) {
+                /* CSRRWI(5), CSRRSI(6), CSRRCI(7) — use rs1 field as zimm */
+                uint32_t csr_addr = insn.imm & 0xFFF;
+                uint32_t csr_val = 0;
+                switch (csr_addr) {
+                case 0x001: csr_val = state->fcsr & 0x1F; break;
+                case 0x002: csr_val = (state->fcsr >> 5) & 0x7; break;
+                case 0x003: csr_val = state->fcsr & 0xFF; break;
+                default:
+                    fprintf(stderr, "rv32-run: unsupported CSR 0x%03X at 0x%08X\n",
+                            csr_addr, state->pc);
+                    return -1;
+                }
+                uint32_t new_val = csr_val;
+                uint32_t zimm = insn.rs1;  /* 5-bit immediate in rs1 field */
+                switch (insn.funct3) {
+                case 5: new_val = zimm; break;                   /* CSRRWI */
+                case 6: new_val = csr_val | zimm; break;         /* CSRRSI */
+                case 7: new_val = csr_val & ~zimm; break;        /* CSRRCI */
+                }
+                if (insn.rd) state->x[insn.rd] = csr_val;
+                switch (csr_addr) {
+                case 0x001: state->fcsr = (state->fcsr & ~0x1Fu) | (new_val & 0x1F); break;
+                case 0x002: state->fcsr = (state->fcsr & ~0xE0u) | ((new_val & 0x7) << 5); break;
+                case 0x003: state->fcsr = new_val & 0xFF; break;
+                }
             } else {
-                /* CSR instructions — reject for microcontroller profile */
-                fprintf(stderr, "rv32-run: CSR instruction at 0x%08X (not supported)\n",
-                        state->pc);
+                fprintf(stderr, "rv32-run: illegal SYSTEM funct3=%d at 0x%08X\n",
+                        insn.funct3, state->pc);
                 return -1;
             }
             break;
+
+        /* ---- RV32F/D floating-point instructions ---- */
+
+        case OP_FP_LOAD: {
+            uint32_t addr = state->x[insn.rs1] + insn.imm;
+            if (insn.funct3 == 2) {
+                /* FLW */
+                uint32_t val = mem_read32(bin, addr);
+                state->f[insn.rd] = 0xFFFFFFFF00000000ULL | val;
+            } else if (insn.funct3 == 3) {
+                /* FLD */
+                uint32_t lo = mem_read32(bin, addr);
+                uint32_t hi = mem_read32(bin, addr + 4);
+                state->f[insn.rd] = ((uint64_t)hi << 32) | lo;
+            } else {
+                fprintf(stderr, "rv32-run: illegal FP load funct3=%d at 0x%08X\n",
+                        insn.funct3, state->pc);
+                return -1;
+            }
+            break;
+        }
+
+        case OP_FP_STORE: {
+            uint32_t addr = state->x[insn.rs1] + insn.imm;
+            if (insn.funct3 == 2) {
+                /* FSW */
+                mem_write32(bin, addr, (uint32_t)state->f[insn.rs2]);
+            } else if (insn.funct3 == 3) {
+                /* FSD */
+                uint64_t val = state->f[insn.rs2];
+                mem_write32(bin, addr, (uint32_t)val);
+                mem_write32(bin, addr + 4, (uint32_t)(val >> 32));
+            } else {
+                fprintf(stderr, "rv32-run: illegal FP store funct3=%d at 0x%08X\n",
+                        insn.funct3, state->pc);
+                return -1;
+            }
+            break;
+        }
+
+        case OP_FMADD: case OP_FMSUB: case OP_FNMSUB: case OP_FNMADD: {
+            int fmt = insn.funct7 & 3; /* 0=S, 1=D */
+            if (fmt == 0) {
+                /* Single-precision FMA */
+                float a = fp_unbox_s(state->f[insn.rs1]);
+                float b = fp_unbox_s(state->f[insn.rs2]);
+                float c = fp_unbox_s(state->f[insn.rs3]);
+                float r;
+                switch (insn.opcode) {
+                case OP_FMADD:  r =  a * b + c; break;
+                case OP_FMSUB:  r =  a * b - c; break;
+                case OP_FNMSUB: r = -a * b + c; break;
+                case OP_FNMADD: r = -a * b - c; break;
+                default: r = 0; break;
+                }
+                state->f[insn.rd] = fp_box_s(r);
+            } else if (fmt == 1) {
+                /* Double-precision FMA */
+                double a = fp_unbox_d(state->f[insn.rs1]);
+                double b = fp_unbox_d(state->f[insn.rs2]);
+                double c = fp_unbox_d(state->f[insn.rs3]);
+                double r;
+                switch (insn.opcode) {
+                case OP_FMADD:  r =  a * b + c; break;
+                case OP_FMSUB:  r =  a * b - c; break;
+                case OP_FNMSUB: r = -a * b + c; break;
+                case OP_FNMADD: r = -a * b - c; break;
+                default: r = 0; break;
+                }
+                state->f[insn.rd] = fp_box_d(r);
+            } else {
+                fprintf(stderr, "rv32-run: illegal FMA fmt=%d at 0x%08X\n", fmt, state->pc);
+                return -1;
+            }
+            break;
+        }
+
+        case OP_FP: {
+            int funct5 = insn.funct7 >> 2;
+            int fmt = insn.funct7 & 3; /* 0=S, 1=D */
+
+            switch (funct5) {
+            case 0x00: /* FADD */
+                if (fmt == 0) {
+                    float a = fp_unbox_s(state->f[insn.rs1]);
+                    float b = fp_unbox_s(state->f[insn.rs2]);
+                    state->f[insn.rd] = fp_box_s(a + b);
+                } else {
+                    double a = fp_unbox_d(state->f[insn.rs1]);
+                    double b = fp_unbox_d(state->f[insn.rs2]);
+                    state->f[insn.rd] = fp_box_d(a + b);
+                }
+                break;
+            case 0x01: /* FSUB */
+                if (fmt == 0) {
+                    float a = fp_unbox_s(state->f[insn.rs1]);
+                    float b = fp_unbox_s(state->f[insn.rs2]);
+                    state->f[insn.rd] = fp_box_s(a - b);
+                } else {
+                    double a = fp_unbox_d(state->f[insn.rs1]);
+                    double b = fp_unbox_d(state->f[insn.rs2]);
+                    state->f[insn.rd] = fp_box_d(a - b);
+                }
+                break;
+            case 0x02: /* FMUL */
+                if (fmt == 0) {
+                    float a = fp_unbox_s(state->f[insn.rs1]);
+                    float b = fp_unbox_s(state->f[insn.rs2]);
+                    state->f[insn.rd] = fp_box_s(a * b);
+                } else {
+                    double a = fp_unbox_d(state->f[insn.rs1]);
+                    double b = fp_unbox_d(state->f[insn.rs2]);
+                    state->f[insn.rd] = fp_box_d(a * b);
+                }
+                break;
+            case 0x03: /* FDIV */
+                if (fmt == 0) {
+                    float a = fp_unbox_s(state->f[insn.rs1]);
+                    float b = fp_unbox_s(state->f[insn.rs2]);
+                    state->f[insn.rd] = fp_box_s(a / b);
+                } else {
+                    double a = fp_unbox_d(state->f[insn.rs1]);
+                    double b = fp_unbox_d(state->f[insn.rs2]);
+                    state->f[insn.rd] = fp_box_d(a / b);
+                }
+                break;
+            case 0x0B: /* FSQRT */
+                if (fmt == 0) {
+                    float a = fp_unbox_s(state->f[insn.rs1]);
+                    state->f[insn.rd] = fp_box_s(sqrtf(a));
+                } else {
+                    double a = fp_unbox_d(state->f[insn.rs1]);
+                    state->f[insn.rd] = fp_box_d(sqrt(a));
+                }
+                break;
+            case 0x04: /* FSGNJ / FSGNJN / FSGNJX */
+                if (fmt == 0) {
+                    uint32_t a, b;
+                    memcpy(&a, &state->f[insn.rs1], 4);
+                    memcpy(&b, &state->f[insn.rs2], 4);
+                    uint32_t r;
+                    switch (insn.funct3) {
+                    case 0: r = (a & 0x7FFFFFFF) | (b & 0x80000000); break;            /* FSGNJ */
+                    case 1: r = (a & 0x7FFFFFFF) | ((~b) & 0x80000000); break;         /* FSGNJN */
+                    case 2: r = (a & 0x7FFFFFFF) | ((a ^ b) & 0x80000000); break;      /* FSGNJX */
+                    default: r = a; break;
+                    }
+                    state->f[insn.rd] = 0xFFFFFFFF00000000ULL | r;
+                } else {
+                    uint64_t a = state->f[insn.rs1];
+                    uint64_t b = state->f[insn.rs2];
+                    uint64_t r;
+                    switch (insn.funct3) {
+                    case 0: r = (a & 0x7FFFFFFFFFFFFFFFULL) | (b & 0x8000000000000000ULL); break;
+                    case 1: r = (a & 0x7FFFFFFFFFFFFFFFULL) | ((~b) & 0x8000000000000000ULL); break;
+                    case 2: r = (a & 0x7FFFFFFFFFFFFFFFULL) | ((a ^ b) & 0x8000000000000000ULL); break;
+                    default: r = a; break;
+                    }
+                    state->f[insn.rd] = r;
+                }
+                break;
+            case 0x05: /* FMIN / FMAX */
+                if (fmt == 0) {
+                    float a = fp_unbox_s(state->f[insn.rs1]);
+                    float b = fp_unbox_s(state->f[insn.rs2]);
+                    float r;
+                    if (insn.funct3 == 0) { /* FMIN */
+                        if (isnan(a) && isnan(b)) { uint32_t cn = 0x7FC00000; memcpy(&r, &cn, 4); }
+                        else if (isnan(a)) r = b;
+                        else if (isnan(b)) r = a;
+                        else if (a == 0 && b == 0) {
+                            /* -0 < +0 */
+                            uint32_t sa, sb;
+                            memcpy(&sa, &a, 4); memcpy(&sb, &b, 4);
+                            r = (sa & 0x80000000) ? a : b;
+                        }
+                        else r = (a < b) ? a : b;
+                    } else { /* FMAX */
+                        if (isnan(a) && isnan(b)) { uint32_t cn = 0x7FC00000; memcpy(&r, &cn, 4); }
+                        else if (isnan(a)) r = b;
+                        else if (isnan(b)) r = a;
+                        else if (a == 0 && b == 0) {
+                            uint32_t sa, sb;
+                            memcpy(&sa, &a, 4); memcpy(&sb, &b, 4);
+                            r = (sa & 0x80000000) ? b : a;
+                        }
+                        else r = (a > b) ? a : b;
+                    }
+                    state->f[insn.rd] = fp_box_s(r);
+                } else {
+                    double a = fp_unbox_d(state->f[insn.rs1]);
+                    double b = fp_unbox_d(state->f[insn.rs2]);
+                    double r;
+                    if (insn.funct3 == 0) { /* FMIN */
+                        if (isnan(a) && isnan(b)) { uint64_t cn = 0x7FF8000000000000ULL; memcpy(&r, &cn, 8); }
+                        else if (isnan(a)) r = b;
+                        else if (isnan(b)) r = a;
+                        else if (a == 0 && b == 0) {
+                            uint64_t sa, sb;
+                            memcpy(&sa, &a, 8); memcpy(&sb, &b, 8);
+                            r = (sa & 0x8000000000000000ULL) ? a : b;
+                        }
+                        else r = (a < b) ? a : b;
+                    } else { /* FMAX */
+                        if (isnan(a) && isnan(b)) { uint64_t cn = 0x7FF8000000000000ULL; memcpy(&r, &cn, 8); }
+                        else if (isnan(a)) r = b;
+                        else if (isnan(b)) r = a;
+                        else if (a == 0 && b == 0) {
+                            uint64_t sa, sb;
+                            memcpy(&sa, &a, 8); memcpy(&sb, &b, 8);
+                            r = (sa & 0x8000000000000000ULL) ? b : a;
+                        }
+                        else r = (a > b) ? a : b;
+                    }
+                    state->f[insn.rd] = fp_box_d(r);
+                }
+                break;
+            case 0x14: /* FEQ / FLT / FLE (compare → integer rd) */
+                if (fmt == 0) {
+                    float a = fp_unbox_s(state->f[insn.rs1]);
+                    float b = fp_unbox_s(state->f[insn.rs2]);
+                    uint32_t r = 0;
+                    switch (insn.funct3) {
+                    case 2: r = (!isnan(a) && !isnan(b) && a == b) ? 1 : 0; break; /* FEQ */
+                    case 1: r = (!isnan(a) && !isnan(b) && a < b)  ? 1 : 0; break; /* FLT */
+                    case 0: r = (!isnan(a) && !isnan(b) && a <= b) ? 1 : 0; break; /* FLE */
+                    }
+                    if (insn.rd) state->x[insn.rd] = r;
+                } else {
+                    double a = fp_unbox_d(state->f[insn.rs1]);
+                    double b = fp_unbox_d(state->f[insn.rs2]);
+                    uint32_t r = 0;
+                    switch (insn.funct3) {
+                    case 2: r = (!isnan(a) && !isnan(b) && a == b) ? 1 : 0; break;
+                    case 1: r = (!isnan(a) && !isnan(b) && a < b)  ? 1 : 0; break;
+                    case 0: r = (!isnan(a) && !isnan(b) && a <= b) ? 1 : 0; break;
+                    }
+                    if (insn.rd) state->x[insn.rd] = r;
+                }
+                break;
+            case 0x18: /* FCVT.W.S / FCVT.WU.S / FCVT.W.D / FCVT.WU.D */
+                if (fmt == 0) {
+                    float a = fp_unbox_s(state->f[insn.rs1]);
+                    int32_t r;
+                    if (insn.rs2 == 0) {
+                        /* FCVT.W.S — float to signed int32 */
+                        if (isnan(a)) r = INT32_MAX;
+                        else if (a >= 2147483648.0f) r = INT32_MAX;
+                        else if (a < -2147483648.0f) r = INT32_MIN;
+                        else r = (int32_t)a;
+                    } else {
+                        /* FCVT.WU.S — float to unsigned int32 */
+                        if (isnan(a) || a < 0.0f) r = 0;
+                        else if (a >= 4294967296.0f) r = (int32_t)UINT32_MAX;
+                        else r = (int32_t)(uint32_t)a;
+                    }
+                    if (insn.rd) state->x[insn.rd] = (uint32_t)r;
+                } else {
+                    double a = fp_unbox_d(state->f[insn.rs1]);
+                    int32_t r;
+                    if (insn.rs2 == 0) {
+                        /* FCVT.W.D — double to signed int32 */
+                        if (isnan(a)) r = INT32_MAX;
+                        else if (a >= 2147483648.0) r = INT32_MAX;
+                        else if (a < -2147483648.0) r = INT32_MIN;
+                        else r = (int32_t)a;
+                    } else {
+                        /* FCVT.WU.D — double to unsigned int32 */
+                        if (isnan(a) || a < 0.0) r = 0;
+                        else if (a >= 4294967296.0) r = (int32_t)UINT32_MAX;
+                        else r = (int32_t)(uint32_t)a;
+                    }
+                    if (insn.rd) state->x[insn.rd] = (uint32_t)r;
+                }
+                break;
+            case 0x1A: /* FCVT.S.W / FCVT.S.WU / FCVT.D.W / FCVT.D.WU */
+                if (fmt == 0) {
+                    if (insn.rs2 == 0) {
+                        /* FCVT.S.W — signed int32 to float */
+                        state->f[insn.rd] = fp_box_s((float)(int32_t)state->x[insn.rs1]);
+                    } else {
+                        /* FCVT.S.WU — unsigned int32 to float */
+                        state->f[insn.rd] = fp_box_s((float)state->x[insn.rs1]);
+                    }
+                } else {
+                    if (insn.rs2 == 0) {
+                        /* FCVT.D.W — signed int32 to double */
+                        state->f[insn.rd] = fp_box_d((double)(int32_t)state->x[insn.rs1]);
+                    } else {
+                        /* FCVT.D.WU — unsigned int32 to double */
+                        state->f[insn.rd] = fp_box_d((double)state->x[insn.rs1]);
+                    }
+                }
+                break;
+            case 0x08: /* FCVT.S.D / FCVT.D.S */
+                if (fmt == 0) {
+                    /* FCVT.S.D — double to float */
+                    double a = fp_unbox_d(state->f[insn.rs1]);
+                    state->f[insn.rd] = fp_box_s((float)a);
+                } else {
+                    /* FCVT.D.S — float to double */
+                    float a = fp_unbox_s(state->f[insn.rs1]);
+                    state->f[insn.rd] = fp_box_d((double)a);
+                }
+                break;
+            case 0x1C: /* FMV.X.W / FCLASS */
+                if (fmt == 0) {
+                    if (insn.funct3 == 0) {
+                        /* FMV.X.W — move FP bits to integer */
+                        if (insn.rd) state->x[insn.rd] = (uint32_t)state->f[insn.rs1];
+                    } else if (insn.funct3 == 1) {
+                        /* FCLASS.S — classify float → 10-bit mask */
+                        float a = fp_unbox_s(state->f[insn.rs1]);
+                        uint32_t bits;
+                        memcpy(&bits, &a, 4);
+                        uint32_t sign = bits >> 31;
+                        uint32_t exp = (bits >> 23) & 0xFF;
+                        uint32_t frac = bits & 0x7FFFFF;
+                        uint32_t cls = 0;
+                        if (exp == 0xFF && frac != 0) {
+                            cls = (frac & 0x400000) ? (1 << 9) : (1 << 8); /* qNaN : sNaN */
+                        } else if (exp == 0xFF) {
+                            cls = sign ? (1 << 0) : (1 << 7); /* -inf : +inf */
+                        } else if (exp == 0 && frac == 0) {
+                            cls = sign ? (1 << 3) : (1 << 4); /* -0 : +0 */
+                        } else if (exp == 0) {
+                            cls = sign ? (1 << 2) : (1 << 5); /* -subnormal : +subnormal */
+                        } else {
+                            cls = sign ? (1 << 1) : (1 << 6); /* -normal : +normal */
+                        }
+                        if (insn.rd) state->x[insn.rd] = cls;
+                    }
+                } else if (fmt == 1 && insn.funct3 == 1) {
+                    /* FCLASS.D — classify double */
+                    double a = fp_unbox_d(state->f[insn.rs1]);
+                    uint64_t bits;
+                    memcpy(&bits, &a, 8);
+                    uint32_t sign = (uint32_t)(bits >> 63);
+                    uint32_t exp = (uint32_t)((bits >> 52) & 0x7FF);
+                    uint64_t frac = bits & 0xFFFFFFFFFFFFFULL;
+                    uint32_t cls = 0;
+                    if (exp == 0x7FF && frac != 0) {
+                        cls = (frac & 0x8000000000000ULL) ? (1 << 9) : (1 << 8);
+                    } else if (exp == 0x7FF) {
+                        cls = sign ? (1 << 0) : (1 << 7);
+                    } else if (exp == 0 && frac == 0) {
+                        cls = sign ? (1 << 3) : (1 << 4);
+                    } else if (exp == 0) {
+                        cls = sign ? (1 << 2) : (1 << 5);
+                    } else {
+                        cls = sign ? (1 << 1) : (1 << 6);
+                    }
+                    if (insn.rd) state->x[insn.rd] = cls;
+                }
+                break;
+            case 0x1E: /* FMV.W.X */
+                if (fmt == 0 && insn.funct3 == 0) {
+                    /* FMV.W.X — move integer bits to FP */
+                    state->f[insn.rd] = 0xFFFFFFFF00000000ULL | state->x[insn.rs1];
+                }
+                break;
+            default:
+                fprintf(stderr, "rv32-run: unhandled FP funct5=0x%02X fmt=%d at 0x%08X\n",
+                        funct5, fmt, state->pc);
+                return -1;
+            }
+            break;
+        }
 
         default:
             fprintf(stderr, "rv32-run: illegal opcode 0x%02X at 0x%08X\n",

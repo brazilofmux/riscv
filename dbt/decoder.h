@@ -16,6 +16,15 @@
 #define OP_FENCE     0x0F
 #define OP_SYSTEM    0x73
 
+/* RV32F/D opcodes */
+#define OP_FP_LOAD   0x07   /* FLW (funct3=2), FLD (funct3=3) */
+#define OP_FP_STORE  0x27   /* FSW (funct3=2), FSD (funct3=3) */
+#define OP_FMADD     0x43   /* FMADD.S/D */
+#define OP_FMSUB     0x47   /* FMSUB.S/D */
+#define OP_FNMSUB    0x4B   /* FNMSUB.S/D */
+#define OP_FNMADD    0x4F   /* FNMADD.S/D */
+#define OP_FP        0x53   /* arithmetic, compare, convert, move */
+
 /* Branch funct3 */
 #define BR_BEQ   0
 #define BR_BNE   1
@@ -62,6 +71,7 @@ typedef struct {
     uint8_t  rd;       /* destination register */
     uint8_t  rs1;      /* source register 1 */
     uint8_t  rs2;      /* source register 2 */
+    uint8_t  rs3;      /* source register 3 (R4-type: FMA) = funct7[6:2] */
     uint8_t  funct3;   /* function code (bits [14:12]) */
     uint8_t  funct7;   /* function code (bits [31:25]) */
     int32_t  imm;      /* decoded immediate (sign-extended) */
@@ -77,6 +87,7 @@ static inline int rv32_decode(uint32_t word, rv32_insn_t *insn) {
     insn->funct3 = (word >> 12) & 0x07;
     insn->rs1    = (word >> 15) & 0x1F;
     insn->rs2    = (word >> 20) & 0x1F;
+    insn->rs3    = (word >> 27) & 0x1F;
     insn->funct7 = (word >> 25) & 0x7F;
 
     /* Decode immediate based on instruction format */
@@ -108,6 +119,7 @@ static inline int rv32_decode(uint32_t word, rv32_insn_t *insn) {
         break;
 
     case OP_STORE:
+    case OP_FP_STORE:
         /* S-type: imm[11:5|4:0] */
         insn->imm = (int32_t)(
             ((word >> 31) ? 0xFFFFF000 : 0) |
@@ -116,8 +128,14 @@ static inline int rv32_decode(uint32_t word, rv32_insn_t *insn) {
         );
         break;
 
+    case OP_FMADD: case OP_FMSUB: case OP_FNMSUB: case OP_FNMADD:
+    case OP_FP:
+        /* R/R4-type: no immediate */
+        insn->imm = 0;
+        break;
+
     default:
-        /* I-type: imm[11:0] (covers LOAD, IMM, JALR, SYSTEM) */
+        /* I-type: imm[11:0] (covers LOAD, FP_LOAD, IMM, JALR, SYSTEM) */
         insn->imm = ((int32_t)word) >> 20;
         break;
     }

@@ -1,7 +1,7 @@
 CC = riscv64-unknown-elf-gcc
 AR = riscv64-unknown-elf-ar
-CFLAGS = -march=rv32im -mabi=ilp32 -O2 -Wall -Wextra -ffreestanding -nostdlib -Iinclude
-ASFLAGS = -march=rv32im -mabi=ilp32
+CFLAGS = -march=rv32imfd -mabi=ilp32d -O2 -Wall -Wextra -ffreestanding -nostdlib -Iinclude
+ASFLAGS = -march=rv32imfd -mabi=ilp32d
 
 SRCS = src/string.c src/string_extra.c src/ctype.c src/errno.c \
        src/malloc.c src/stdlib_utils.c src/stdlib_extra.c \

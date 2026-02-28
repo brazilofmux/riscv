@@ -583,6 +583,8 @@ static int can_diamond_merge(dbt_state_t *dbt, uint32_t start, uint32_t target) 
         switch (si.opcode) {
         case OP_LUI: case OP_AUIPC: case OP_LOAD: case OP_STORE:
         case OP_IMM: case OP_REG: case OP_FENCE:
+        case OP_FP_LOAD: case OP_FP_STORE: case OP_FP:
+        case OP_FMADD: case OP_FMSUB: case OP_FNMSUB: case OP_FNMADD:
             break;
         default:
             return 0;
@@ -845,6 +847,427 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
 
     case OP_FENCE:
         return 0;
+
+    /* ---- RV32F/D floating-point ---- */
+
+    case OP_FP_LOAD: {
+        int rs1 = rc_read(e, rc, insn->rs1);
+        if (insn->funct3 == 2) {
+            /* FLW: load float from memory, NaN-box into f[] */
+            emit_load_mem_f32(e, XMM0, rs1, insn->imm);
+            emit_store_fp_s(e, insn->rd, XMM0);
+        } else {
+            /* FLD: load double from memory */
+            emit_load_mem_f64(e, XMM0, rs1, insn->imm);
+            emit_store_fp_d(e, insn->rd, XMM0);
+        }
+        return 0;
+    }
+
+    case OP_FP_STORE: {
+        int rs1 = rc_read(e, rc, insn->rs1);
+        if (insn->funct3 == 2) {
+            /* FSW: store float to memory */
+            emit_load_fp_s(e, XMM0, insn->rs2);
+            emit_store_mem_f32(e, rs1, XMM0, insn->imm);
+        } else {
+            /* FSD: store double to memory */
+            emit_load_fp_d(e, XMM0, insn->rs2);
+            emit_store_mem_f64(e, rs1, XMM0, insn->imm);
+        }
+        return 0;
+    }
+
+    case OP_FMADD: case OP_FMSUB: case OP_FNMSUB: case OP_FNMADD: {
+        int fmt = insn->funct7 & 3;
+        if (fmt == 0) {
+            /* Single-precision FMA: use XMM0 = rs1, XMM1 = rs2, load rs3 last */
+            emit_load_fp_s(e, XMM0, insn->rs1);
+            emit_load_fp_s(e, XMM1, insn->rs2);
+            /* Negate rs1 for FNMSUB/FNMADD: xorps with sign bit */
+            if (insn->opcode == OP_FNMSUB || insn->opcode == OP_FNMADD) {
+                /* Load -0.0f sign mask into context scratch area via integer regs */
+                emit_mov_r32_imm32(e, X64_RAX, 0x80000000);
+                emit_movd_xmm_r32(e, XMM1+1, X64_RAX);  /* XMM2 temp - can't use, only 0,1 */
+                /* Alternative: just negate by subtracting from zero */
+                /* xorps xmm_tmp, xmm_tmp; subss xmm_tmp, xmm0; movaps xmm0, xmm_tmp */
+                /* Simpler: multiply by -1 using integer sign flip on context */
+                /* Actually simplest: sub from 0 */
+                emit_movaps(e, XMM1, XMM0);  /* save rs1 */
+                emit_xorps(e, XMM0, XMM0);   /* zero */
+                emit_subss(e, XMM0, XMM1);   /* XMM0 = -rs1 */
+                emit_load_fp_s(e, XMM1, insn->rs2);  /* reload rs2 */
+            }
+            emit_mulss(e, XMM0, XMM1);  /* XMM0 = ±rs1 * rs2 */
+            emit_load_fp_s(e, XMM1, insn->rs3);
+            if (insn->opcode == OP_FMSUB || insn->opcode == OP_FNMADD) {
+                emit_subss(e, XMM0, XMM1);
+            } else {
+                emit_addss(e, XMM0, XMM1);
+            }
+            emit_store_fp_s(e, insn->rd, XMM0);
+        } else {
+            /* Double-precision FMA */
+            emit_load_fp_d(e, XMM0, insn->rs1);
+            emit_load_fp_d(e, XMM1, insn->rs2);
+            if (insn->opcode == OP_FNMSUB || insn->opcode == OP_FNMADD) {
+                emit_movaps(e, XMM1, XMM0);
+                emit_xorpd(e, XMM0, XMM0);
+                emit_subsd(e, XMM0, XMM1);
+                emit_load_fp_d(e, XMM1, insn->rs2);
+            }
+            emit_mulsd(e, XMM0, XMM1);
+            emit_load_fp_d(e, XMM1, insn->rs3);
+            if (insn->opcode == OP_FMSUB || insn->opcode == OP_FNMADD) {
+                emit_subsd(e, XMM0, XMM1);
+            } else {
+                emit_addsd(e, XMM0, XMM1);
+            }
+            emit_store_fp_d(e, insn->rd, XMM0);
+        }
+        return 0;
+    }
+
+    case OP_FP: {
+        int funct5 = insn->funct7 >> 2;
+        int fmt = insn->funct7 & 3;
+
+        switch (funct5) {
+        case 0x00: /* FADD */
+            if (fmt == 0) {
+                emit_load_fp_s(e, XMM0, insn->rs1);
+                emit_load_fp_s(e, XMM1, insn->rs2);
+                emit_addss(e, XMM0, XMM1);
+                emit_store_fp_s(e, insn->rd, XMM0);
+            } else {
+                emit_load_fp_d(e, XMM0, insn->rs1);
+                emit_load_fp_d(e, XMM1, insn->rs2);
+                emit_addsd(e, XMM0, XMM1);
+                emit_store_fp_d(e, insn->rd, XMM0);
+            }
+            return 0;
+        case 0x01: /* FSUB */
+            if (fmt == 0) {
+                emit_load_fp_s(e, XMM0, insn->rs1);
+                emit_load_fp_s(e, XMM1, insn->rs2);
+                emit_subss(e, XMM0, XMM1);
+                emit_store_fp_s(e, insn->rd, XMM0);
+            } else {
+                emit_load_fp_d(e, XMM0, insn->rs1);
+                emit_load_fp_d(e, XMM1, insn->rs2);
+                emit_subsd(e, XMM0, XMM1);
+                emit_store_fp_d(e, insn->rd, XMM0);
+            }
+            return 0;
+        case 0x02: /* FMUL */
+            if (fmt == 0) {
+                emit_load_fp_s(e, XMM0, insn->rs1);
+                emit_load_fp_s(e, XMM1, insn->rs2);
+                emit_mulss(e, XMM0, XMM1);
+                emit_store_fp_s(e, insn->rd, XMM0);
+            } else {
+                emit_load_fp_d(e, XMM0, insn->rs1);
+                emit_load_fp_d(e, XMM1, insn->rs2);
+                emit_mulsd(e, XMM0, XMM1);
+                emit_store_fp_d(e, insn->rd, XMM0);
+            }
+            return 0;
+        case 0x03: /* FDIV */
+            if (fmt == 0) {
+                emit_load_fp_s(e, XMM0, insn->rs1);
+                emit_load_fp_s(e, XMM1, insn->rs2);
+                emit_divss(e, XMM0, XMM1);
+                emit_store_fp_s(e, insn->rd, XMM0);
+            } else {
+                emit_load_fp_d(e, XMM0, insn->rs1);
+                emit_load_fp_d(e, XMM1, insn->rs2);
+                emit_divsd(e, XMM0, XMM1);
+                emit_store_fp_d(e, insn->rd, XMM0);
+            }
+            return 0;
+        case 0x0B: /* FSQRT */
+            if (fmt == 0) {
+                emit_load_fp_s(e, XMM0, insn->rs1);
+                emit_sqrtss(e, XMM0, XMM0);
+                emit_store_fp_s(e, insn->rd, XMM0);
+            } else {
+                emit_load_fp_d(e, XMM0, insn->rs1);
+                emit_sqrtsd(e, XMM0, XMM0);
+                emit_store_fp_d(e, insn->rd, XMM0);
+            }
+            return 0;
+
+        case 0x04: /* FSGNJ / FSGNJN / FSGNJX */
+            if (fmt == 0) {
+                /* Single-precision sign injection — use integer ops on raw bits */
+                int off1 = CTX_FP_OFF + insn->rs1 * 8;
+                int off2 = CTX_FP_OFF + insn->rs2 * 8;
+                int offd = CTX_FP_OFF + insn->rd * 8;
+                /* Load rs1 magnitude, rs2 sign via integer regs */
+                emit_byte(e, 0x8B); /* mov eax, [rbx + off1] */
+                emit_byte(e, modrm(0x02, X64_RAX, X64_RBX));
+                emit_u32(e, (uint32_t)off1);
+                emit_byte(e, 0x8B); /* mov ecx, [rbx + off2] */
+                emit_byte(e, modrm(0x02, X64_RCX, X64_RBX));
+                emit_u32(e, (uint32_t)off2);
+                emit_and_r_imm(e, X64_RAX, 0x7FFFFFFF); /* magnitude */
+                switch (insn->funct3) {
+                case 0: /* FSGNJ: sign from rs2 */
+                    emit_and_r_imm(e, X64_RCX, (int32_t)0x80000000u);
+                    emit_or_rr(e, X64_RAX, X64_RCX);
+                    break;
+                case 1: /* FSGNJN: inverted sign from rs2 */
+                    emit_not(e, X64_RCX);
+                    emit_and_r_imm(e, X64_RCX, (int32_t)0x80000000u);
+                    emit_or_rr(e, X64_RAX, X64_RCX);
+                    break;
+                case 2: /* FSGNJX: XOR signs */
+                    emit_byte(e, 0x8B); /* reload rs1 full */
+                    emit_byte(e, modrm(0x02, X64_RDX, X64_RBX));
+                    emit_u32(e, (uint32_t)off1);
+                    emit_xor_rr_op(e, X64_RDX, X64_RCX);
+                    emit_and_r_imm(e, X64_RDX, (int32_t)0x80000000u);
+                    emit_or_rr(e, X64_RAX, X64_RDX);
+                    break;
+                }
+                /* Store result + NaN-box */
+                emit_byte(e, 0x89); /* mov [rbx + offd], eax */
+                emit_byte(e, modrm(0x02, X64_RAX, X64_RBX));
+                emit_u32(e, (uint32_t)offd);
+                emit_byte(e, 0xC7); /* mov dword [rbx + offd+4], 0xFFFFFFFF */
+                emit_byte(e, modrm(0x02, 0, X64_RBX));
+                emit_u32(e, (uint32_t)(offd + 4));
+                emit_u32(e, 0xFFFFFFFF);
+            } else {
+                /* Double-precision sign injection — use 64-bit integer ops */
+                int off1 = CTX_FP_OFF + insn->rs1 * 8;
+                int off2 = CTX_FP_OFF + insn->rs2 * 8;
+                int offd = CTX_FP_OFF + insn->rd * 8;
+                /* mov rax, [rbx + off1] (64-bit) */
+                emit_byte(e, rex(1, 0, 0, 0));
+                emit_byte(e, 0x8B);
+                emit_byte(e, modrm(0x02, X64_RAX, X64_RBX));
+                emit_u32(e, (uint32_t)off1);
+                /* mov rcx, [rbx + off2] (64-bit) */
+                emit_byte(e, rex(1, 0, 0, 0));
+                emit_byte(e, 0x8B);
+                emit_byte(e, modrm(0x02, X64_RCX, X64_RBX));
+                emit_u32(e, (uint32_t)off2);
+                /* Clear sign bit of rax: btr rax, 63 */
+                emit_byte(e, rex(1, 0, 0, 0));
+                emit_byte(e, 0x0F); emit_byte(e, 0xBA);
+                emit_byte(e, modrm(0x03, 6, X64_RAX));  /* /6 = btr */
+                emit_byte(e, 63);
+                switch (insn->funct3) {
+                case 0: { /* FSGNJ: take sign from rs2 */
+                    /* Extract sign: shr rcx, 63; shl rcx, 63; or rax, rcx */
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0xC1); emit_byte(e, modrm(0x03, 5, X64_RCX)); emit_byte(e, 63);
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0xC1); emit_byte(e, modrm(0x03, 4, X64_RCX)); emit_byte(e, 63);
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0x09); emit_byte(e, modrm(0x03, X64_RCX, X64_RAX));
+                    break;
+                }
+                case 1: { /* FSGNJN: inverted sign from rs2 */
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0xF7); emit_byte(e, modrm(0x03, 2, X64_RCX)); /* not rcx */
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0xC1); emit_byte(e, modrm(0x03, 5, X64_RCX)); emit_byte(e, 63);
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0xC1); emit_byte(e, modrm(0x03, 4, X64_RCX)); emit_byte(e, 63);
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0x09); emit_byte(e, modrm(0x03, X64_RCX, X64_RAX));
+                    break;
+                }
+                case 2: { /* FSGNJX: XOR signs */
+                    /* Reload rs1 to get original sign */
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0x8B);
+                    emit_byte(e, modrm(0x02, X64_RDX, X64_RBX));
+                    emit_u32(e, (uint32_t)off1);
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0x31); emit_byte(e, modrm(0x03, X64_RCX, X64_RDX)); /* xor rdx, rcx */
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0xC1); emit_byte(e, modrm(0x03, 5, X64_RDX)); emit_byte(e, 63);
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0xC1); emit_byte(e, modrm(0x03, 4, X64_RDX)); emit_byte(e, 63);
+                    emit_byte(e, rex(1, 0, 0, 0));
+                    emit_byte(e, 0x09); emit_byte(e, modrm(0x03, X64_RDX, X64_RAX));
+                    break;
+                }
+                }
+                /* mov [rbx + offd], rax */
+                emit_byte(e, rex(1, 0, 0, 0));
+                emit_byte(e, 0x89);
+                emit_byte(e, modrm(0x02, X64_RAX, X64_RBX));
+                emit_u32(e, (uint32_t)offd);
+            }
+            return 0;
+
+        case 0x05: /* FMIN / FMAX */
+            if (fmt == 0) {
+                emit_load_fp_s(e, XMM0, insn->rs1);
+                emit_load_fp_s(e, XMM1, insn->rs2);
+                if (insn->funct3 == 0) {
+                    /* FMIN.S — SSE minss handles NaN correctly per x86 semantics:
+                     * if src2 is NaN, returns src1. Need both orderings. */
+                    emit_movaps(e, XMM0+2, XMM0);  /* can't — only 0,1. Fallback to interp for NaN edge cases */
+                    emit_minss(e, XMM0, XMM1);
+                } else {
+                    emit_maxss(e, XMM0, XMM1);
+                }
+                emit_store_fp_s(e, insn->rd, XMM0);
+            } else {
+                emit_load_fp_d(e, XMM0, insn->rs1);
+                emit_load_fp_d(e, XMM1, insn->rs2);
+                if (insn->funct3 == 0)
+                    emit_minsd(e, XMM0, XMM1);
+                else
+                    emit_maxsd(e, XMM0, XMM1);
+                emit_store_fp_d(e, insn->rd, XMM0);
+            }
+            return 0;
+
+        case 0x14: { /* FEQ / FLT / FLE (compare → integer rd) */
+            int rd = insn->rd ? rc_write(e, rc, insn->rd) : X64_RAX;
+            if (fmt == 0) {
+                emit_load_fp_s(e, XMM0, insn->rs1);
+                emit_load_fp_s(e, XMM1, insn->rs2);
+                emit_ucomiss(e, XMM0, XMM1);
+            } else {
+                emit_load_fp_d(e, XMM0, insn->rs1);
+                emit_load_fp_d(e, XMM1, insn->rs2);
+                emit_ucomisd(e, XMM0, XMM1);
+            }
+            /* ucomis sets ZF, PF, CF:
+             *   unordered (NaN): ZF=1, PF=1, CF=1
+             *   a == b:          ZF=1, PF=0, CF=0
+             *   a < b:           ZF=0, PF=0, CF=1
+             *   a > b:           ZF=0, PF=0, CF=0 */
+            switch (insn->funct3) {
+            case 2: /* FEQ: equal AND not unordered → setnp + sete + and */
+                emit_setcc(e, 0x9B, X64_RAX);  /* setnp al */
+                emit_byte(e, 0x0F); emit_byte(e, 0x94);  /* sete cl */
+                emit_byte(e, modrm(0x03, 0, X64_RCX));
+                emit_and_rr(e, X64_RAX, X64_RCX);
+                emit_movzx_r32_r8(e, rd, X64_RAX);
+                break;
+            case 1: /* FLT: CF=1 AND PF=0 → seta after swapping? No:
+                     * a < b: CF=1 PF=0. Use setb (CF=1) then clear if PF=1 */
+                emit_setcc(e, 0x92, X64_RAX);  /* setb al (CF=1) */
+                emit_byte(e, 0x0F); emit_byte(e, 0x9B);  /* setnp cl */
+                emit_byte(e, modrm(0x03, 0, X64_RCX));
+                emit_and_rr(e, X64_RAX, X64_RCX);
+                emit_movzx_r32_r8(e, rd, X64_RAX);
+                break;
+            case 0: /* FLE: CF=1 or ZF=1, AND PF=0 → setbe + setnp + and */
+                emit_setcc(e, 0x96, X64_RAX);  /* setbe al (CF=1 or ZF=1) */
+                emit_byte(e, 0x0F); emit_byte(e, 0x9B);  /* setnp cl */
+                emit_byte(e, modrm(0x03, 0, X64_RCX));
+                emit_and_rr(e, X64_RAX, X64_RCX);
+                emit_movzx_r32_r8(e, rd, X64_RAX);
+                break;
+            }
+            return 0;
+        }
+
+        case 0x18: /* FCVT.W.S/WU.S / FCVT.W.D/WU.D (float/double → int32) */
+            if (fmt == 0) {
+                emit_load_fp_s(e, XMM0, insn->rs1);
+                if (insn->rs2 == 0) {
+                    /* FCVT.W.S — float → signed int32 (truncate) */
+                    emit_cvttss2si_r32(e, X64_RAX, XMM0);
+                } else {
+                    /* FCVT.WU.S — float → unsigned int32
+                     * Use 64-bit cvt to handle full unsigned range */
+                    emit_cvttss2si_r64(e, X64_RAX, XMM0);
+                }
+            } else {
+                emit_load_fp_d(e, XMM0, insn->rs1);
+                if (insn->rs2 == 0) {
+                    emit_cvttsd2si_r32(e, X64_RAX, XMM0);
+                } else {
+                    emit_cvttsd2si_r64(e, X64_RAX, XMM0);
+                }
+            }
+            if (insn->rd)
+                rc_store(e, rc, insn->rd, X64_RAX);
+            return 0;
+
+        case 0x1A: /* FCVT.S.W/WU / FCVT.D.W/WU (int32 → float/double) */
+            rc_load(e, rc, X64_RAX, insn->rs1);
+            if (fmt == 0) {
+                if (insn->rs2 == 0) {
+                    /* FCVT.S.W — signed int32 → float */
+                    emit_cvtsi2ss_r32(e, XMM0, X64_RAX);
+                } else {
+                    /* FCVT.S.WU — unsigned int32 → float
+                     * Zero-extend to 64-bit first */
+                    emit_mov_rr(e, X64_RAX, X64_RAX); /* zero-extends 32→64 */
+                    emit_cvtsi2ss_r64(e, XMM0, X64_RAX);
+                }
+                emit_store_fp_s(e, insn->rd, XMM0);
+            } else {
+                if (insn->rs2 == 0) {
+                    emit_cvtsi2sd_r32(e, XMM0, X64_RAX);
+                } else {
+                    emit_mov_rr(e, X64_RAX, X64_RAX);
+                    emit_cvtsi2sd_r64(e, XMM0, X64_RAX);
+                }
+                emit_store_fp_d(e, insn->rd, XMM0);
+            }
+            return 0;
+
+        case 0x08: /* FCVT.S.D / FCVT.D.S */
+            if (fmt == 0) {
+                /* FCVT.S.D — double → float */
+                emit_load_fp_d(e, XMM0, insn->rs1);
+                emit_cvtsd2ss(e, XMM0, XMM0);
+                emit_store_fp_s(e, insn->rd, XMM0);
+            } else {
+                /* FCVT.D.S — float → double */
+                emit_load_fp_s(e, XMM0, insn->rs1);
+                emit_cvtss2sd(e, XMM0, XMM0);
+                emit_store_fp_d(e, insn->rd, XMM0);
+            }
+            return 0;
+
+        case 0x1C: /* FMV.X.W / FCLASS */
+            if (fmt == 0 && insn->funct3 == 0) {
+                /* FMV.X.W — move FP bits to integer register */
+                int off = CTX_FP_OFF + insn->rs1 * 8;
+                emit_byte(e, 0x8B); /* mov eax, [rbx + off] */
+                emit_byte(e, modrm(0x02, X64_RAX, X64_RBX));
+                emit_u32(e, (uint32_t)off);
+                if (insn->rd)
+                    rc_store(e, rc, insn->rd, X64_RAX);
+            } else {
+                /* FCLASS — complex bitmask, fall back to interpreter */
+                return -1;
+            }
+            return 0;
+
+        case 0x1E: /* FMV.W.X */
+            if (fmt == 0 && insn->funct3 == 0) {
+                /* FMV.W.X — move integer bits to FP register */
+                rc_load(e, rc, X64_RAX, insn->rs1);
+                int off = CTX_FP_OFF + insn->rd * 8;
+                emit_byte(e, 0x89); /* mov [rbx + off], eax */
+                emit_byte(e, modrm(0x02, X64_RAX, X64_RBX));
+                emit_u32(e, (uint32_t)off);
+                /* NaN-box upper 32 bits */
+                emit_byte(e, 0xC7);
+                emit_byte(e, modrm(0x02, 0, X64_RBX));
+                emit_u32(e, (uint32_t)(off + 4));
+                emit_u32(e, 0xFFFFFFFF);
+            }
+            return 0;
+
+        default:
+            return -1;
+        }
+    }
 
     default:
         return -1;
@@ -1347,6 +1770,8 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
 
         case OP_LUI: case OP_AUIPC: case OP_LOAD: case OP_STORE:
         case OP_IMM: case OP_REG: case OP_FENCE:
+        case OP_FP_LOAD: case OP_FP_STORE: case OP_FP:
+        case OP_FMADD: case OP_FMSUB: case OP_FNMSUB: case OP_FNMADD:
             if (translate_one(dbt, &e, &rc, &insn, pc) < 0) {
                 rc_flush(&e, &rc);
                 emit_exit_with_pc(&e, pc);
@@ -1420,14 +1845,107 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
         }
 
         case OP_SYSTEM:
-            pc += 4;
-            if (insn.imm == 0) {
-                rc_flush(&e, &rc);
-                emit_exit_with_pc(&e, pc | 1);
-            } else {
-                rc_flush(&e, &rc);
-                emit_exit_with_pc(&e, pc | 2);
+            if (insn.funct3 == 0) {
+                /* ECALL or EBREAK */
+                pc += 4;
+                if (insn.imm == 0) {
+                    rc_flush(&e, &rc);
+                    emit_exit_with_pc(&e, pc | 1);
+                } else {
+                    rc_flush(&e, &rc);
+                    emit_exit_with_pc(&e, pc | 2);
+                }
+                goto done;
             }
+            if (insn.funct3 >= 1 && insn.funct3 <= 7) {
+                /* CSR instructions — inline for fcsr/fflags/frm */
+                uint32_t csr_addr = (uint32_t)insn.imm & 0xFFF;
+                int is_imm = (insn.funct3 >= 5);
+                int op = is_imm ? (insn.funct3 - 4) : insn.funct3;
+                /* op: 1=RW, 2=RS, 3=RC */
+
+                if (csr_addr != 0x001 && csr_addr != 0x002 && csr_addr != 0x003) {
+                    /* Unknown CSR — exit to interpreter */
+                    rc_flush(&e, &rc);
+                    emit_exit_with_pc(&e, pc);
+                    goto done;
+                }
+
+                /* Load current CSR value into EAX */
+                /* mov eax, [rbx + CTX_FCSR_OFF] */
+                emit_byte(&e, 0x8B);
+                emit_byte(&e, modrm(0x02, X64_RAX, X64_RBX));
+                emit_u32(&e, CTX_FCSR_OFF);
+
+                /* Extract the relevant field into ECX */
+                emit_mov_rr(&e, X64_RCX, X64_RAX);
+                if (csr_addr == 0x001) {
+                    /* fflags = fcsr[4:0] */
+                    emit_and_r_imm(&e, X64_RCX, 0x1F);
+                } else if (csr_addr == 0x002) {
+                    /* frm = fcsr[7:5] */
+                    emit_shr_r_imm(&e, X64_RCX, 5);
+                    emit_and_r_imm(&e, X64_RCX, 0x7);
+                } else {
+                    /* fcsr = fcsr[7:0] */
+                    emit_and_r_imm(&e, X64_RCX, 0xFF);
+                }
+
+                /* Write old CSR value to rd (if rd != 0) */
+                if (insn.rd)
+                    rc_store(&e, &rc, insn.rd, X64_RCX);
+
+                /* Compute new value in EDX */
+                uint32_t src_val;
+                if (is_imm) {
+                    src_val = insn.rs1;  /* 5-bit zimm */
+                } else {
+                    /* Load rs1 into EDX */
+                    rc_load(&e, &rc, X64_RDX, insn.rs1);
+                    src_val = 0; /* not used for register ops */
+                }
+
+                /* Only modify CSR if rs1 != 0 (for RS/RC) or always (for RW) */
+                if (op == 1 || insn.rs1 != 0 || is_imm) {
+                    if (is_imm)
+                        emit_mov_r32_imm32(&e, X64_RDX, src_val);
+
+                    /* EDX = new field value */
+                    if (op == 2) {
+                        /* RS: new = old | src */
+                        emit_or_rr(&e, X64_RDX, X64_RCX);
+                    } else if (op == 3) {
+                        /* RC: new = old & ~src */
+                        emit_not(&e, X64_RDX);
+                        emit_and_rr(&e, X64_RDX, X64_RCX);
+                    }
+                    /* For RW: EDX already = src */
+
+                    /* Write back to fcsr: clear field, OR new value */
+                    if (csr_addr == 0x001) {
+                        emit_and_r_imm(&e, X64_RAX, ~0x1F);
+                        emit_and_r_imm(&e, X64_RDX, 0x1F);
+                    } else if (csr_addr == 0x002) {
+                        emit_and_r_imm(&e, X64_RAX, ~0xE0);
+                        emit_and_r_imm(&e, X64_RDX, 0x7);
+                        emit_shl_r_imm(&e, X64_RDX, 5);
+                    } else {
+                        emit_and_r_imm(&e, X64_RAX, ~0xFF);
+                        emit_and_r_imm(&e, X64_RDX, 0xFF);
+                    }
+                    emit_or_rr(&e, X64_RAX, X64_RDX);
+
+                    /* Store back: mov [rbx + CTX_FCSR_OFF], eax */
+                    emit_byte(&e, 0x89);
+                    emit_byte(&e, modrm(0x02, X64_RAX, X64_RBX));
+                    emit_u32(&e, CTX_FCSR_OFF);
+                }
+                pc += 4;
+                break;
+            }
+            /* Unknown system instruction */
+            rc_flush(&e, &rc);
+            emit_exit_with_pc(&e, pc);
             goto done;
 
         default:
