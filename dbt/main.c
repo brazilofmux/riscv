@@ -5,22 +5,84 @@
 #include <string.h>
 
 static void usage(const char *prog) {
-    fprintf(stderr, "Usage: %s [options] program.elf\n", prog);
+    fprintf(stderr, "Usage: %s [options] program.elf [guest-args...]\n", prog);
     fprintf(stderr, "\nOptions:\n");
     fprintf(stderr, "  -i       Use interpreter (default: DBT)\n");
     fprintf(stderr, "  -s       Show stats on exit\n");
     fprintf(stderr, "  -h       Show this help\n");
     fprintf(stderr, "\nRV32IM microcontroller binary executor.\n");
     fprintf(stderr, "Accepts standard ELF32 RISC-V executables (RV32IM, no RVC).\n");
+    fprintf(stderr, "Arguments after the ELF file are passed to the guest program.\n");
+}
+
+/*
+ * Set up argc/argv on the guest stack.  Layout (growing downward):
+ *
+ *   [arg strings, packed]     <-- string area
+ *   [argv[argc] = NULL]
+ *   [argv[argc-1]]           <-- pointers into string area (guest addrs)
+ *   ...
+ *   [argv[0]]                <-- argv pointer (guest addr)
+ *                             <-- new SP (16-byte aligned)
+ *
+ * Returns the new stack_top, sets *out_argc and *out_argv (guest addresses).
+ */
+static uint32_t setup_guest_args(rv32_binary_t *bin, int guest_argc,
+                                  char **guest_argv, uint32_t *out_argc,
+                                  uint32_t *out_argv)
+{
+    uint32_t sp = bin->stack_top;
+
+    if (guest_argc == 0) {
+        *out_argc = 0;
+        *out_argv = 0;
+        return sp;
+    }
+
+    /* Write arg strings to top of stack, track their guest addresses */
+    uint32_t str_addrs[128];  /* max 128 guest args */
+    if (guest_argc > 128) guest_argc = 128;
+
+    for (int i = guest_argc - 1; i >= 0; i--) {
+        size_t len = strlen(guest_argv[i]) + 1;  /* include NUL */
+        sp -= len;
+        memcpy(bin->memory + sp, guest_argv[i], len);
+        str_addrs[i] = sp;
+    }
+
+    /* Align to 4 bytes */
+    sp &= ~3u;
+
+    /* Write argv array (NULL-terminated) */
+    sp -= (guest_argc + 1) * 4;
+    uint32_t argv_base = sp;
+    for (int i = 0; i < guest_argc; i++) {
+        uint32_t addr = str_addrs[i];
+        memcpy(bin->memory + argv_base + i * 4, &addr, 4);
+    }
+    uint32_t null_val = 0;
+    memcpy(bin->memory + argv_base + guest_argc * 4, &null_val, 4);
+
+    /* 16-byte align SP */
+    sp &= ~15u;
+
+    *out_argc = guest_argc;
+    *out_argv = argv_base;
+    return sp;
 }
 
 int main(int argc, char *argv[]) {
     int show_stats = 0;
     int use_interp = 0;
     const char *elf_file = NULL;
+    int elf_arg_index = 0;
 
     int trace = 0;
     for (int i = 1; i < argc; i++) {
+        if (elf_file) {
+            /* Everything after the ELF file is a guest arg — stop parsing */
+            break;
+        }
         if (strcmp(argv[i], "-i") == 0) {
             use_interp = 1;
         } else if (strcmp(argv[i], "-s") == 0) {
@@ -36,6 +98,7 @@ int main(int argc, char *argv[]) {
             return 1;
         } else {
             elf_file = argv[i];
+            elf_arg_index = i;
         }
     }
 
@@ -44,11 +107,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* Guest args: argv[elf_arg_index .. argc-1] */
+    int guest_argc = argc - elf_arg_index;
+    char **guest_argv = argv + elf_arg_index;
+
     /* Load ELF */
     rv32_binary_t bin;
     if (rv32_load_elf(elf_file, &bin) != 0) {
         return 1;
     }
+
+    /* Set up guest argc/argv on the guest stack */
+    uint32_t g_argc, g_argv;
+    uint32_t new_sp = setup_guest_args(&bin, guest_argc, guest_argv, &g_argc, &g_argv);
 
     int exit_code;
 
@@ -57,7 +128,9 @@ int main(int argc, char *argv[]) {
         rv32_state_t state;
         memset(&state, 0, sizeof(state));
         state.pc = bin.entry_point;
-        state.x[2] = bin.stack_top;
+        state.x[2] = new_sp;
+        state.x[10] = g_argc;   /* a0 = argc */
+        state.x[11] = g_argv;   /* a1 = argv */
 
         exit_code = rv32_interp_run(&state, &bin);
 
@@ -74,7 +147,9 @@ int main(int argc, char *argv[]) {
         }
 
         dbt.ctx.next_pc = bin.entry_point;
-        dbt.ctx.x[2] = bin.stack_top;
+        dbt.ctx.x[2] = new_sp;
+        dbt.ctx.x[10] = g_argc;   /* a0 = argc */
+        dbt.ctx.x[11] = g_argv;   /* a1 = argv */
 
         dbt.trace = trace;
         exit_code = dbt_run(&dbt);

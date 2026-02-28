@@ -19,9 +19,7 @@ _start:
     # Set frame pointer to zero (end of call chain)
     li      fp, 0
 
-    # Call main(argc=0, argv=NULL)
-    li      a0, 0
-    li      a1, 0
+    # Call main(argc, argv) — a0 and a1 are set by the host loader
     call    main
 
     # Exit with main's return value (in a0)
