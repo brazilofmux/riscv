@@ -1,0 +1,4 @@
+X = peter,L = [peter,ann,pat]
+true.
+X = peter,A = 7,L = [peter-7,ann-11,pat-8]
+true.

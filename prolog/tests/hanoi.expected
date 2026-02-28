@@ -1,0 +1,8 @@
+Move disk 1 from left to right
+Move disk 2 from left to center
+Move disk 1 from right to center
+Move disk 3 from left to right
+Move disk 1 from center to left
+Move disk 2 from center to right
+Move disk 1 from left to right
+true.
