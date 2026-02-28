@@ -1,0 +1,5 @@
+(display (string-length "hello")) (newline)
+(display (string-append "hello" " " "world")) (newline)
+(display (substring "hello world" 0 5)) (newline)
+(display (string->number "42")) (newline)
+(display (number->string 123)) (newline)

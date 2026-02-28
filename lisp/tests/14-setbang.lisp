@@ -1,0 +1,15 @@
+(define x 10)
+(display x) (newline)
+(set! x 20)
+(display x) (newline)
+
+(define (make-counter)
+  (let ((count 0))
+    (lambda ()
+      (set! count (+ count 1))
+      count)))
+
+(define c (make-counter))
+(display (c)) (newline)
+(display (c)) (newline)
+(display (c)) (newline)
