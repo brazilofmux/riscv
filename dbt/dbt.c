@@ -1089,14 +1089,22 @@ static uint8_t *translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 break;
             scan_pc += 4;
         }
-        if (self_loop && past_first_branch) {
-            /* Deep self-loop: don't enable warm_entry because the
-             * 8-slot register cache fills up during translation of
-             * the extended loop body.  Evictions remap host registers
-             * to different guest registers, so warm_entry's assumed
-             * mapping diverges from the actual mapping at the back-edge.
-             * Let the branch be handled normally instead. */
-            self_loop = 0;
+        if (self_loop) {
+            /* Count distinct source registers used in the loop body.
+             * If the count exceeds our 8-slot register cache, evictions
+             * during translation will remap host registers to different
+             * guest registers, so warm_entry's assumed mapping diverges
+             * from the actual mapping at the back-edge.  This also
+             * catches deep self-loops (past_first_branch) where the
+             * extended body uses many registers.
+             *
+             * Common trigger: GCC -O2 struct copy loops that use 6 data
+             * temporaries + 2 pointer registers + 1 end marker = 9. */
+            int nused = 0;
+            for (int r = 1; r < 32; r++)
+                if (used[r]) nused++;
+            if (past_first_branch || nused > RC_NUM_SLOTS)
+                self_loop = 0;
         }
         if (self_loop) {
             int loaded = 0;

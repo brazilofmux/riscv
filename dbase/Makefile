@@ -1,5 +1,5 @@
 CC = riscv64-unknown-elf-gcc
-CFLAGS = -march=rv32im -mabi=ilp32 -Os -ffreestanding -nostdlib \
+CFLAGS = -march=rv32im -mabi=ilp32 -O2 -ffreestanding -nostdlib \
          -I../runtime/include -Isrc -fno-builtin -D__slow32__
 LDFLAGS = -T ../runtime/link.ld -nostdlib -march=rv32im -mabi=ilp32
 
