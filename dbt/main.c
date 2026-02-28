@@ -38,35 +38,42 @@ static void usage(const char *prog) {
 }
 
 /*
- * Set up argc/argv on the guest stack.  Layout (growing downward):
+ * Set up argc/argv on the guest stack using the Linux ABI layout so
+ * that the same ELF runs under both our DBT and qemu-riscv32:
  *
  *   [arg strings, packed]     <-- string area
+ *   [padding to 16-byte align]
+ *   [envp[0] = NULL]         <-- empty environment
  *   [argv[argc] = NULL]
- *   [argv[argc-1]]           <-- pointers into string area (guest addrs)
+ *   [argv[argc-1]]           <-- pointers into string area
  *   ...
- *   [argv[0]]                <-- argv pointer (guest addr)
- *                             <-- new SP (16-byte aligned)
+ *   [argv[0]]
+ *   [argc]                   <-- SP points here
  *
- * Returns the new stack_top, sets *out_argc and *out_argv (guest addresses).
+ * crt0 reads argc from sp[0] and argv from sp+4.
  */
 static uint32_t setup_guest_args(rv32_binary_t *bin, int guest_argc,
-                                  char **guest_argv, uint32_t *out_argc,
-                                  uint32_t *out_argv)
+                                  char **guest_argv)
 {
     uint32_t sp = bin->stack_top;
 
     if (guest_argc == 0) {
-        *out_argc = 0;
-        *out_argv = 0;
+        /* Push: envp NULL, argv NULL, argc=0 */
+        sp -= 12;
+        sp &= ~15u;
+        uint32_t zero = 0;
+        memcpy(bin->memory + sp, &zero, 4);      /* argc = 0 */
+        memcpy(bin->memory + sp + 4, &zero, 4);  /* argv[0] = NULL */
+        memcpy(bin->memory + sp + 8, &zero, 4);  /* envp[0] = NULL */
         return sp;
     }
 
     /* Write arg strings to top of stack, track their guest addresses */
-    uint32_t str_addrs[128];  /* max 128 guest args */
+    uint32_t str_addrs[128];
     if (guest_argc > 128) guest_argc = 128;
 
     for (int i = guest_argc - 1; i >= 0; i--) {
-        size_t len = strlen(guest_argv[i]) + 1;  /* include NUL */
+        size_t len = strlen(guest_argv[i]) + 1;
         sp -= len;
         memcpy(bin->memory + sp, guest_argv[i], len);
         str_addrs[i] = sp;
@@ -75,21 +82,22 @@ static uint32_t setup_guest_args(rv32_binary_t *bin, int guest_argc,
     /* Align to 4 bytes */
     sp &= ~3u;
 
-    /* Write argv array (NULL-terminated) */
-    sp -= (guest_argc + 1) * 4;
-    uint32_t argv_base = sp;
-    for (int i = 0; i < guest_argc; i++) {
-        uint32_t addr = str_addrs[i];
-        memcpy(bin->memory + argv_base + i * 4, &addr, 4);
-    }
-    uint32_t null_val = 0;
-    memcpy(bin->memory + argv_base + guest_argc * 4, &null_val, 4);
-
-    /* 16-byte align SP */
+    /* Build the stack frame: argc, argv[0..n], NULL, envp NULL */
+    uint32_t frame_words = 1 + guest_argc + 1 + 1;  /* argc + argv + NULL + envp NULL */
+    sp -= frame_words * 4;
     sp &= ~15u;
 
-    *out_argc = guest_argc;
-    *out_argv = argv_base;
+    uint32_t argc32 = (uint32_t)guest_argc;
+    memcpy(bin->memory + sp, &argc32, 4);
+
+    for (int i = 0; i < guest_argc; i++) {
+        uint32_t addr = str_addrs[i];
+        memcpy(bin->memory + sp + 4 + i * 4, &addr, 4);
+    }
+    uint32_t null_val = 0;
+    memcpy(bin->memory + sp + 4 + guest_argc * 4, &null_val, 4);     /* argv terminator */
+    memcpy(bin->memory + sp + 4 + (guest_argc + 1) * 4, &null_val, 4); /* envp terminator */
+
     return sp;
 }
 
@@ -139,9 +147,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Set up guest argc/argv on the guest stack */
-    uint32_t g_argc, g_argv;
-    uint32_t new_sp = setup_guest_args(&bin, guest_argc, guest_argv, &g_argc, &g_argv);
+    /* Set up guest argc/argv on the guest stack (Linux ABI layout) */
+    uint32_t new_sp = setup_guest_args(&bin, guest_argc, guest_argv);
 
     /* Save terminal state for crash recovery */
     if (tcgetattr(STDIN_FILENO, &orig_termios) == 0) {
@@ -166,8 +173,6 @@ int main(int argc, char *argv[]) {
         memset(&state, 0, sizeof(state));
         state.pc = bin.entry_point;
         state.x[2] = new_sp;
-        state.x[10] = g_argc;   /* a0 = argc */
-        state.x[11] = g_argv;   /* a1 = argv */
 
         exit_code = rv32_interp_run(&state, &bin);
 
@@ -185,8 +190,6 @@ int main(int argc, char *argv[]) {
 
         dbt.ctx.next_pc = bin.entry_point;
         dbt.ctx.x[2] = new_sp;
-        dbt.ctx.x[10] = g_argc;   /* a0 = argc */
-        dbt.ctx.x[11] = g_argv;   /* a1 = argv */
 
         dbt.trace = trace;
         exit_code = dbt_run(&dbt);
