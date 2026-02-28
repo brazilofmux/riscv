@@ -8,6 +8,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <time.h>
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <poll.h>
 
 /* Max guest instructions per translated block */
 #define MAX_BLOCK_INSNS  64
@@ -148,6 +151,60 @@ static int handle_ecall(dbt_state_t *dbt) {
 
     case 404: /* get_cpu_clock() — returns host clock() value */
         ctx->x[10] = (uint32_t)clock();
+        break;
+
+    case 500: /* term_setraw(mode) — set terminal raw/cooked mode */
+        {
+            int mode = (int)ctx->x[10];
+            struct termios t;
+            if (tcgetattr(STDIN_FILENO, &t) < 0) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            if (mode) {
+                t.c_iflag &= ~(unsigned)(ICRNL | IXON | BRKINT | INPCK | ISTRIP);
+                t.c_oflag &= ~(unsigned)(OPOST);
+                t.c_lflag &= ~(unsigned)(ICANON | ECHO | ISIG | IEXTEN);
+                t.c_cflag |= CS8;
+                t.c_cc[VMIN] = 1;
+                t.c_cc[VTIME] = 0;
+            } else {
+                t.c_iflag |= ICRNL | IXON;
+                t.c_oflag |= OPOST;
+                t.c_lflag |= ICANON | ECHO | ISIG | IEXTEN;
+            }
+            ctx->x[10] = (tcsetattr(STDIN_FILENO, TCSAFLUSH, &t) == 0) ? 0 : (uint32_t)-1;
+        }
+        break;
+
+    case 501: /* term_getsize(buf) — get terminal dimensions */
+        {
+            uint32_t buf_addr = ctx->x[10];
+            if (buf_addr + 8 > dbt->bin->memory_size) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            struct winsize ws;
+            if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+                uint32_t rows = ws.ws_row;
+                uint32_t cols = ws.ws_col;
+                memcpy(dbt->bin->memory + buf_addr, &rows, 4);
+                memcpy(dbt->bin->memory + buf_addr + 4, &cols, 4);
+                ctx->x[10] = 0;
+            } else {
+                ctx->x[10] = (uint32_t)-1;
+            }
+        }
+        break;
+
+    case 502: /* term_kbhit() — non-blocking key check */
+        {
+            struct pollfd pfd;
+            pfd.fd = STDIN_FILENO;
+            pfd.events = POLLIN;
+            int ret = poll(&pfd, 1, 0);
+            ctx->x[10] = (ret > 0 && (pfd.revents & POLLIN)) ? 1 : 0;
+        }
         break;
 
     default:

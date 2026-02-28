@@ -7,13 +7,14 @@ SRCS = src/string.c src/string_extra.c src/ctype.c src/errno.c \
        src/malloc.c src/stdlib_utils.c src/stdlib_extra.c \
        src/convert.c src/convert_extra.c \
        src/printf.c src/dtoa.c src/stdio.c src/math_soft.c \
-       src/time.c src/stubs.c
+       src/time.c src/term.c src/stubs.c
 
 OBJS = $(SRCS:.c=.o)
 CRT0 = crt0.o
 SYSCALL = src/syscall.o
 SETJMP = src/setjmp.o
 TIME_SYSCALL = src/time_syscall.o
+TERM_SYSCALL = src/term_syscall.o
 
 .PHONY: all clean
 
@@ -31,6 +32,9 @@ $(SETJMP): src/setjmp.s
 $(TIME_SYSCALL): src/time_syscall.s
 	$(CC) $(ASFLAGS) -c $< -o $@
 
+$(TERM_SYSCALL): src/term_syscall.s
+	$(CC) $(ASFLAGS) -c $< -o $@
+
 src/dtoa.o: src/dtoa.c
 	$(CC) $(CFLAGS) -DIEEE_8087 -Wno-sign-compare -Wno-implicit-fallthrough -Wno-maybe-uninitialized -c $< -o $@
 
@@ -40,8 +44,8 @@ src/math_soft.o: src/math_soft.c
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-libc.a: $(OBJS) $(SYSCALL) $(SETJMP) $(TIME_SYSCALL)
+libc.a: $(OBJS) $(SYSCALL) $(SETJMP) $(TIME_SYSCALL) $(TERM_SYSCALL)
 	$(AR) rcs $@ $^
 
 clean:
-	rm -f $(CRT0) $(OBJS) $(SYSCALL) $(SETJMP) $(TIME_SYSCALL) libc.a
+	rm -f $(CRT0) $(OBJS) $(SYSCALL) $(SETJMP) $(TIME_SYSCALL) $(TERM_SYSCALL) libc.a

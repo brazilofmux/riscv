@@ -3,6 +3,28 @@
 #include "dbt.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <termios.h>
+#include <unistd.h>
+
+/* Terminal state preservation for crash recovery */
+static struct termios orig_termios;
+static int termios_saved = 0;
+
+static void restore_terminal(void) {
+    if (termios_saved)
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+}
+
+static void signal_handler(int sig) {
+    /* Only async-signal-safe functions here */
+    if (termios_saved)
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+    /* Re-raise to get default behavior (core dump, exit, etc.) */
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
 
 static void usage(const char *prog) {
     fprintf(stderr, "Usage: %s [options] program.elf [guest-args...]\n", prog);
@@ -120,6 +142,21 @@ int main(int argc, char *argv[]) {
     /* Set up guest argc/argv on the guest stack */
     uint32_t g_argc, g_argv;
     uint32_t new_sp = setup_guest_args(&bin, guest_argc, guest_argv, &g_argc, &g_argv);
+
+    /* Save terminal state for crash recovery */
+    if (tcgetattr(STDIN_FILENO, &orig_termios) == 0) {
+        termios_saved = 1;
+        atexit(restore_terminal);
+        struct sigaction sa;
+        sa.sa_handler = signal_handler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        sigaction(SIGINT,  &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+        sigaction(SIGQUIT, &sa, NULL);
+        sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGABRT, &sa, NULL);
+    }
 
     int exit_code;
 
