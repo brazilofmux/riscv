@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <time.h>
 
 /* Memory access helpers — little-endian */
 static inline uint32_t mem_read32(rv32_binary_t *bin, uint32_t addr) {
@@ -137,6 +138,27 @@ static int handle_ecall(rv32_state_t *s, rv32_binary_t *bin) {
 
     case 214: /* brk — not needed */
         s->x[10] = 0;
+        break;
+
+    case 403: /* clock_gettime(clockid, tp_addr) */
+        {
+            uint32_t tp_addr = s->x[11];
+            if (tp_addr + 8 > bin->memory_size) {
+                s->x[10] = (uint32_t)-1;
+                break;
+            }
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            uint32_t sec = (uint32_t)ts.tv_sec;
+            uint32_t nsec = (uint32_t)ts.tv_nsec;
+            memcpy(bin->memory + tp_addr, &sec, 4);
+            memcpy(bin->memory + tp_addr + 4, &nsec, 4);
+            s->x[10] = 0;
+        }
+        break;
+
+    case 404: /* get_cpu_clock() — returns host clock() value */
+        s->x[10] = (uint32_t)clock();
         break;
 
     default:

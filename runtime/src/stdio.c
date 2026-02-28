@@ -405,6 +405,10 @@ int rename(const char *oldpath, const char *newpath) {
     return -1;
 }
 
+FILE *tmpfile(void) {
+    return NULL;  /* no temp file support on bare metal */
+}
+
 /* POSIX-layer wrappers for unistd.h functions */
 int open(const char *pathname, int flags, ...) {
     return _openat(AT_FDCWD, pathname, flags, 0666);

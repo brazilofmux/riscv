@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <time.h>
 
 /* Max guest instructions per translated block */
 #define MAX_BLOCK_INSNS  64
@@ -113,6 +114,27 @@ static int handle_ecall(dbt_state_t *dbt) {
 
     case 214: /* brk — not needed, return 0 */
         ctx->x[10] = 0;
+        break;
+
+    case 403: /* clock_gettime(clockid, tp_addr) */
+        {
+            uint32_t tp_addr = ctx->x[11];
+            if (tp_addr + 8 > dbt->bin->memory_size) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            uint32_t sec = (uint32_t)ts.tv_sec;
+            uint32_t nsec = (uint32_t)ts.tv_nsec;
+            memcpy(dbt->bin->memory + tp_addr, &sec, 4);
+            memcpy(dbt->bin->memory + tp_addr + 4, &nsec, 4);
+            ctx->x[10] = 0;
+        }
+        break;
+
+    case 404: /* get_cpu_clock() — returns host clock() value */
+        ctx->x[10] = (uint32_t)clock();
         break;
 
     default:

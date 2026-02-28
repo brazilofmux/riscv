@@ -70,5 +70,6 @@ int ungetc(int c, FILE *stream);
 int setvbuf(FILE *stream, char *buf, int mode, size_t size);
 
 int sscanf(const char *str, const char *format, ...);
+FILE *tmpfile(void);
 
 #endif
