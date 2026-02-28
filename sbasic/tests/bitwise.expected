@@ -1,0 +1,36 @@
+=== Bitwise AND ===
+ 1
+ 15
+ 0
+ 255
+=== Bitwise OR ===
+ 7
+ 255
+ 0
+=== Bitwise XOR ===
+ 4
+ 0
+ 255
+ 255
+=== Bitwise NOT ===
+-1
+ 0
+-2
+-256
+=== Combined ===
+ 9
+ 255
+ 63
+=== Truth table AND ===
+ 1
+ 0
+ 0
+ 0
+=== Truth table OR ===
+ 1
+ 1
+ 1
+ 0
+=== Masking ===
+ 240
+ 15

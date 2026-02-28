@@ -1,0 +1,8 @@
+R1 (new):  0.655154
+R2 (last):  0.655154
+R3 (last):  0.655154
+R4 (new):  0.304814
+PASS: RND(0) matches RND(1)
+PASS: RND(1) moved forward
+PASS: RND(-n) resets sequence
+

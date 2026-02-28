@@ -108,6 +108,19 @@ static int handle_ecall(dbt_state_t *dbt) {
         }
         break;
 
+    case 35:  /* unlinkat(dirfd, pathname, flags) */
+        {
+            uint32_t path_addr = ctx->x[11];
+            if (path_addr >= dbt->bin->memory_size) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            const char *pathname = (const char *)(dbt->bin->memory + path_addr);
+            int result = unlink(pathname);
+            ctx->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
     case 80:  /* fstat — stub, return -1 */
         ctx->x[10] = (uint32_t)-1;
         break;

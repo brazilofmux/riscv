@@ -1,0 +1,5 @@
+LSET: [Hi        ]
+RSET: [        Hi]
+LSET trunc: [Hello]
+RSET short: [   XY]
+Done

@@ -1,0 +1,17 @@
+MIN(3,7)= 3
+MIN(-5,2)=-5
+MAX(3,7)= 7
+MAX(-5,2)= 2
+MIN(1.5,1.2)= 1.2
+MAX(1.5,1.2)= 1.5
+FLOOR(3.7)= 3
+FLOOR(-3.7)=-4
+FLOOR(5)= 5
+CEIL(3.2)= 4
+CEIL(-3.7)=-3
+CEIL(5)= 5
+REVERSE$=OLLEH
+REVERSE$ empty=
+REVERSE$ 1=A
+CHDIR OK
+Done

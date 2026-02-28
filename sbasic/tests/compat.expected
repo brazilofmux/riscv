@@ -1,0 +1,11 @@
+BIN$(0)=0
+BIN$(10)=1010
+BIN$(255)=11111111
+Single: 3.14
+Long: 42
+Arr single: 1.5 2.5
+Arr long: 100 200
+Question mark print
+Bang suffix: 9.99
+Literal: 3.14
+Done

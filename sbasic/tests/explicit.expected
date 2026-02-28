@@ -1,0 +1,6 @@
+Before explicit: 42
+Declared: 100
+String: hello
+Double: 3.14159
+Caught error: 3
+Explicit OK

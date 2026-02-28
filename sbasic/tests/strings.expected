@@ -1,0 +1,9 @@
+Hello, World
+Length: 12
+Left 5: Hello
+Right 6:  World
+Mid 3,4: llo,
+CHR$(65) = A
+ASC(A) = 65
+STR$(42) = 42
+VAL(123) = 123

@@ -1,0 +1,11 @@
+PEEK(1000) = 42
+PEEK(1001) = 255
+PEEK(1002) = 0
+PEEK(1003) = 0
+Stored 12345got 12345
+PEEK(1600) = 77
+PEEK(1601) = 88
+Via seg PEEK(0) = 77
+STRIG(0) = 0
+STICK(0) = 0
+Done

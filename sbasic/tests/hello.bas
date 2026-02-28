@@ -1,0 +1,5 @@
+PRINT "Hello, World!"
+PRINT "SLOW BASIC v0.1"
+PRINT
+PRINT "2 + 3 ="; 2 + 3
+END

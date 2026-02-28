@@ -395,9 +395,10 @@ int setvbuf(FILE *stream, char *buf, int mode, size_t size) {
     return 0;
 }
 
+extern int _unlinkat(int dirfd, const char *pathname, int flags);
+
 int remove(const char *pathname) {
-    (void)pathname;
-    return -1;
+    return _unlinkat(-100, pathname, 0);  /* AT_FDCWD = -100 */
 }
 
 int rename(const char *oldpath, const char *newpath) {

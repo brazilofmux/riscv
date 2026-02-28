@@ -58,3 +58,11 @@ _fstat:
     ecall
     ret
     .size _fstat, . - _fstat
+
+    .global _unlinkat
+    .type _unlinkat, @function
+_unlinkat:
+    li      a7, 35           # unlinkat(dirfd=a0, path=a1, flags=a2)
+    ecall
+    ret
+    .size _unlinkat, . - _unlinkat

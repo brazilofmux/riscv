@@ -1,0 +1,8 @@
+FRE(0) = 65536
+FRE(str) = 65536
+LPRINT output
+ERR before = 0
+ERL before = 0
+ERR = 5
+ERL = 8
+After error

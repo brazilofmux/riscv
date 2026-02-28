@@ -132,6 +132,19 @@ static int handle_ecall(rv32_state_t *s, rv32_binary_t *bin) {
         }
         break;
 
+    case 35:  /* unlinkat(dirfd, pathname, flags) */
+        {
+            uint32_t path_addr = s->x[11];
+            if (path_addr >= bin->memory_size) {
+                s->x[10] = (uint32_t)-1;
+                break;
+            }
+            const char *pathname = (const char *)(bin->memory + path_addr);
+            int result = unlink(pathname);
+            s->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
     case 80:  /* fstat — stub */
         s->x[10] = (uint32_t)-1;
         break;

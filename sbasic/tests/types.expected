@@ -1,0 +1,13 @@
+ 3.5  7.2
+Alice age  30 score  95.5
+After birthday:  31
+-1  0
+Sum:  10.7
+In SUB:  100  200
+After SUB:  3.5  7.2
+Loop done, last:  200  400
+In ModifyShared:  43  85
+After ModifyShared:  43  85
+200 calls OK
+Done
+

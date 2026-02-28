@@ -1,0 +1,54 @@
+REM === Math Function Tests ===
+
+REM Trig functions
+PRINT SIN(0)
+PRINT COS(0)
+PRINT TAN(0)
+PRINT ATN(0)
+
+REM SIN(pi/2) should be ~1
+x = 3.14159265358979 / 2
+PRINT SIN(x)
+
+REM COS(pi) should be ~-1
+PRINT COS(3.14159265358979)
+
+REM ATN(1)*4 should be ~pi
+PRINT ATN(1) * 4
+
+REM ATN2
+PRINT ATN2(1, 0)
+PRINT ATN2(0, 1)
+
+REM EXP / LOG
+PRINT EXP(0)
+PRINT EXP(1)
+PRINT LOG(1)
+PRINT LOG(EXP(1))
+
+REM LOG10
+PRINT LOG10(100)
+
+REM FIX and CINT
+PRINT FIX(3.7)
+PRINT FIX(-3.7)
+PRINT CINT(3.5)
+PRINT CINT(-3.5)
+PRINT CDBL(42)
+
+REM RND with seed
+RANDOMIZE 12345
+a = RND(1)
+b = RND(1)
+PRINT a <> b
+
+REM SWAP
+x = 100
+y = 200
+SWAP x, y
+PRINT x; " "; y
+
+a$ = "hello"
+b$ = "world"
+SWAP a$, b$
+PRINT a$; " "; b$
