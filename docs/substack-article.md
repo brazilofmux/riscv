@@ -18,11 +18,17 @@ It was a great education in ISA design, compiler engineering, and how all the pi
 
 Then I had the moment that changed everything: *almost none of it mattered.*
 
-The custom ISA was converging on RISC-V anyway. Every time I hit a pain point—comparison instructions that didn't compose well, immediate encoding that wasted bits, calling conventions that fought the register allocator—the fix moved the design closer to something that already existed. Fixed-width 32-bit encoding. Load-store architecture. 32 registers with x0 hardwired to zero. PC-relative addressing.
+I had chosen a 32-bit, LLVM-friendly, 3-address code ISA. It was already heavily inspired by RISC-V, but it wasn’t RISC-V. It would never be able to run Linux. The custom ISA was fun and capable. With a DBT, it was blazingly fast.
 
-The custom LLVM backend couldn't match 30 years of GCC/LLVM optimization work on RISC-V. The custom assembler and linker didn't buy me anything over stock binutils. The custom binary format wasn't better than ELF. The selfhosting bootstrap was intellectually satisfying but practically irrelevant.
+But it made no sense to compile LLVM for this. My own self-hosted C compiler was capable, but it would never compete with GCC or LLVM. An FPGA implementation on a DE-10 Nano would be fun, but it made no sense to make an almost-RISC-V.
 
-The only piece that was genuinely unique—the only piece you can't get off the shelf—was the dynamic binary translator.
+But wait—why can’t I just use one of the predefined RISC-V subsets? Would that work?
+
+Yes. With any stock cross-compiler. With ELF binary compatibility with stock QEMU.
+
+The custom assembler and linker didn’t buy me anything over stock binutils. The custom binary format wasn’t better than ELF. The selfhosting bootstrap was intellectually satisfying but practically irrelevant.
+
+The only piece that was genuinely unique—the only piece you can’t get off the shelf—was the dynamic binary translator. And I had assumed that my QEMU TCG implementation for my custom ISA was somehow broken. The stock QEMU on RISC-V proved that it wasn’t—a purpose-built DBT simply beats a general-purpose emulator.
 
 So I threw it all away except the DBT. Pointed stock GCC at `-march=rv32im -mabi=ilp32`. Re-ported every program against the stock toolchain. The result was better in every way: better code generation, better debugging (GDB, objdump, readelf just work), better ecosystem (any RISC-V tutorial applies), and zero maintenance burden on the toolchain.
 
@@ -103,7 +109,7 @@ RISC-V machine code is the *output* of LLVM's optimization and lowering pipeline
 
 **Threads.** The A (atomic) extension adds load-reserved/store-conditional and atomic read-modify-write operations. We haven't implemented them yet because single-threaded execution covers every workload we've tested. But the approach *generalizes* — a thread is just another context (register file, PC, stack pointer), and the translation pipeline doesn't care how many are running. The hard part is shared memory semantics, and here RISC-V does us another favor: its weak memory ordering (RVWMO) is automatically satisfied by x86-64's stronger TSO model. LR/SC maps to CMPXCHG loops, AMO instructions map to LOCK-prefixed operations, FENCE becomes a no-op. It's maybe 10 new instructions to translate. We just haven't needed it.
 
-**ARM64 host backend.** The current emitter targets x86-64 only. An ARM64 backend would unlock Apple Silicon and Raspberry Pi. The register cache, block chaining, and superblock architecture are host-agnostic—only the ~1,000-line emitter needs porting. ARM64's larger register file would actually allow expanding the cache from 8 to 16+ slots.
+**ARM64 host backend.** The current RISC-V DBT emitter targets x86-64 only—but we already built a working ARM64 backend for the SLOW-32 DBT (~5,500 lines across emitter and translator). The architecture is proven; we just haven't ported it to the RISC-V translator yet. The register cache, block chaining, and superblock design are host-agnostic. Only the emitter needs porting, and ARM64's larger register file would actually allow expanding the cache from 8 to 16+ slots.
 
 **Compressed instructions.** The C extension adds 16-bit compressed instructions that significantly reduce code size. The decoder would need to handle variable-length fetch, but the translation pipeline is otherwise unchanged.
 
