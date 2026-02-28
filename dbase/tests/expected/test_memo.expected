@@ -1,0 +1,29 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Field name: Database MTEST.DBF created with 2 field(s).
+. Database MTEST.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . Record# NAME            NOTES
+      1 Alice           memo 
+      2 Bob             memo 
+      3 Carol                
+. . Record# 1
+      NAME: Alice
+     NOTES: This is a memo for Alice
+. This is a memo for Alice
+. . Bob's memo text here
+. . 
+. 0
+. 3 record(s) copied.
+. Database MCOPY.DBF opened with 3 record(s).
+. Record# NAME            NOTES
+      1 Alice           memo 
+      2 Bob             memo 
+      3 Carol                
+. . This is a memo for Alice
+. . Bob's memo text here
+

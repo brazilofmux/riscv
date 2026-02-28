@@ -1,0 +1,21 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database ONERR2.DBF created with 2 field(s).
+. --- Test 1: UNIQUE violation ---
+Database ONERR2.DBF opened with 0 record(s).
+Record 1 added.
+Record 2 added.
+2 record(s) indexed.
+Record 3 added.
+Error code: 143
+Has Uniqueness: YES
+Record count: 3
+--- Test 2: Division by zero ---
+Error code: 21
+Has division: YES
+--- Test 3: Record range ---
+Error code: 5
+Database closed.
+Done

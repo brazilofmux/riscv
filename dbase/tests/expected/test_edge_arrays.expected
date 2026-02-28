@@ -1,0 +1,25 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. --- Array boundary conditions ---
+. . . . . . --- arr[0] (below lower bound) ---
+. *** Array index out of bounds
+. . --- arr[6] (above upper bound) ---
+. *** Array index out of bounds
+. . --- arr[-1] (negative) ---
+. *** Array index out of bounds
+. . --- Normal access for sanity ---
+. First
+. Last
+. . --- 2D array bounds ---
+. . . . --- m[0,1] ---
+. *** Array index out of bounds
+. . --- m[4,1] ---
+. *** Array index out of bounds
+. . --- m[1,0] ---
+. *** Array index out of bounds
+. . --- m[1,4] ---
+. *** Array index out of bounds
+. . --- STORE to array without index ---
+. *** Array assignment requires index
+

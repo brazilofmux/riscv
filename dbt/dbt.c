@@ -124,6 +124,15 @@ static int handle_ecall(dbt_state_t *dbt) {
         }
         break;
 
+    case 46:  /* ftruncate(fd, length) */
+        {
+            int fd = (int)ctx->x[10];
+            off_t length = (off_t)(int32_t)ctx->x[11];
+            int result = ftruncate(fd, length);
+            ctx->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
     case 80:  /* fstat — stub, return -1 */
         ctx->x[10] = (uint32_t)-1;
         break;

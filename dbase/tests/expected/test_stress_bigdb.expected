@@ -1,0 +1,16 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database BIGTEST.DBF created with 3 field(s).
+. Database BIGTEST.DBF opened with 0 record(s).
+. Inserted: 1000
+Found 500: .T. ITEM  500 0
+Found 1: .T. ITEM    1 1
+Not found: .F.
+After pack: 500
+Seek after pack: .T. ITEM    1
+First sorted QTY: 1
+Last sorted QTY: 99
+Sorted count: 500
+

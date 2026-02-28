@@ -1,0 +1,41 @@
+* String boundary stress tests
+? LEN(REPLICATE("X", 300))
+? LEN(REPLICATE("X", 255))
+? LEN(REPLICATE("AB", 200))
+? LEN(SPACE(300))
+? LEN(SPACE(255))
+? LEN(PADR("X", 300))
+? LEN(PADL("X", 300))
+? LEN(PADC("X", 300))
+* Concatenation: 200+200=400 > 255, truncated to 255
+s1 = REPLICATE("A", 200)
+s2 = REPLICATE("B", 200)
+? LEN(s1 + s2)
+? LEN(s1)
+* Concatenation: 200+55=255, fits exactly
+s3 = REPLICATE("C", 55)
+? LEN(s1 + s3)
+* Concatenation: 200+56=256 > 255, truncated to 255
+s4 = REPLICATE("D", 56)
+? LEN(s1 + s4)
+* SUBSTR on max-length string
+? LEN(SUBSTR(SPACE(255), 250, 20))
+? SUBSTR(PADR("ABCDE", 255), 1, 5)
+* Zero/negative args
+? LEN(REPLICATE("X", 0))
+? LEN(SPACE(0))
+? LEN(PADR("X", 0))
+? LEN(PADR("X", -1))
+* Field at max width
+CREATE STRTST
+BIGVAL
+C
+254
+
+USE STRTST
+APPEND BLANK
+REPLACE BIGVAL WITH REPLICATE("Z", 300)
+? LEN(TRIM(BIGVAL))
+? LEN(BIGVAL)
+USE
+QUIT

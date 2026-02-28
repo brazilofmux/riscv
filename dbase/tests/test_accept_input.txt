@@ -1,0 +1,8 @@
+ACCEPT "Enter name: " TO name
+World
+? name
+INPUT "Enter value: " TO num
+42
+? num
+? num + 8
+QUIT

@@ -1,0 +1,5 @@
+* This is a comment at dot prompt
+? "Start"
+DO CMTTEST
+? "End"
+QUIT

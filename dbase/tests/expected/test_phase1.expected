@@ -1,0 +1,26 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. . . . . . . . . . . . . . . . . . SET no-ops OK
+. . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database TEST.DBF created with 2 field(s).
+. . . . . CLOSE DATABASES OK
+. . . . CLOSE INDEX OK
+. . . . . . . keep
+. RELEASE LIKE OK
+. . . . . . . keep
+. RELEASE EXCEPT OK
+. . . yes
+. no
+. bigger
+. IIF OK
+. . exists
+. missing
+. FILE OK
+. . 19850315
+. DTOS OK
+. .   0
+.   1
+. ROW/COL OK
+. . File erased.
+

@@ -1,0 +1,20 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database PEOPLE.DBF created with 3 field(s).
+. Database PEOPLE.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . . Label remark? Label height (5)? Label width (35)? Left margin (0)? Lines between labels (1)? Spaces between labels (0)? Labels across (1)? Line 1 contents? Line 2 contents? Line 3 contents? Label definition TESTLBL.LBL created.
+. . John Smith          
+Akron, OH           
+                    
+
+Jane Doe            
+Toledo, OH          
+                    
+
+. . File erased.
+. File erased.
+

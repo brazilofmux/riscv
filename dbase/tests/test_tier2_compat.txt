@@ -1,0 +1,119 @@
+* Test Tier 2 compatibility functions
+* Array functions
+DECLARE ar[5]
+ar[1] = "Charlie"
+ar[2] = "Alice"
+ar[3] = "Bob"
+ar[4] = "David"
+ar[5] = "Eve"
+? ALEN(ar)
+? ASCAN(ar, "Bob")
+x = ASORT(ar)
+? ar[1]
+? ar[2]
+? ar[3]
+x = AINS(ar, 2)
+? ar[1]
+? ar[2]
+? ar[3]
+x = ADEL(ar, 1)
+? ar[1]
+? ar[2]
+* ACOPY test
+DECLARE src[3]
+DECLARE dst[3]
+src[1] = "X"
+src[2] = "Y"
+src[3] = "Z"
+dst[1] = ""
+dst[2] = ""
+dst[3] = ""
+x = ACOPY(src, dst)
+? dst[1]
+? dst[2]
+? dst[3]
+* String functions
+? LIKE("*ob*", "Robert")
+? LIKE("A*", "Bob")
+? CHRTRAN("Hello", "lo", "LO")
+? CHRTRAN("aabb", "ab", "x")
+? DIFFERENCE("Robert", "Rupert")
+? DIFFERENCE("Hello", "Zebra")
+* Date functions
+? GOMONTH({01/15/2025}, 3)
+? GOMONTH({01/31/2025}, 1)
+? DMY({07/04/2026})
+? MDY({12/25/2025})
+* System stubs
+? MEMORY()
+? DISKSPACE()
+* SET MEMOWIDTH, EPOCH, MARK
+SET MEMOWIDTH TO 60
+SET EPOCH TO 1950
+SET MARK TO -
+? "Settings changed"
+SET MEMOWIDTH TO 50
+SET EPOCH TO 0
+SET MARK TO
+* COPY TO SDF and APPEND FROM SDF
+CREATE SDFTEST
+NAME
+C
+20
+AGE
+N
+3
+0
+
+USE SDFTEST
+APPEND BLANK
+REPLACE NAME WITH "Alice", AGE WITH 25
+APPEND BLANK
+REPLACE NAME WITH "Bob", AGE WITH 30
+COPY TO SDFOUT SDF
+USE
+* Read back the SDF
+CREATE SDFTEST2
+NAME
+C
+20
+AGE
+N
+3
+0
+
+USE SDFTEST2
+APPEND FROM SDFOUT.TXT SDF
+LIST
+USE
+DELETE FILE SDFTEST.DBF
+DELETE FILE SDFTEST2.DBF
+DELETE FILE SDFOUT.TXT
+* AFIELDS test
+CREATE AFTEST
+FNAME
+C
+15
+LNAME
+C
+20
+AGE
+N
+3
+0
+SALARY
+N
+10
+2
+
+USE AFTEST
+DECLARE flds[4,4]
+? AFIELDS(flds)
+? flds[1,1]
+? flds[1,2]
+? flds[2,1]
+? flds[3,1]
+? flds[3,3]
+USE
+DELETE FILE AFTEST.DBF
+QUIT

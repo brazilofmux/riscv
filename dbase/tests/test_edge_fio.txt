@@ -1,0 +1,38 @@
+? "--- FWRITE/FREAD edge cases ---"
+h = FCREATE("testfile.txt")
+
+? "--- FWRITE zero bytes via 3rd arg ---"
+n = FWRITE(h, "Hello", 0)
+? "Wrote:", n
+
+? "--- FWRITE negative count ---"
+n = FWRITE(h, "Hello", -5)
+? "Wrote:", n
+
+? "--- FWRITE normal for later read ---"
+n = FWRITE(h, "ABCDE")
+? "Wrote:", n
+
+? "--- FREAD zero count ---"
+? "FSEEK:", FSEEK(h, 0, 0)
+s = FREAD(h, 0)
+? "Read zero:", "[" + s + "]"
+
+? "--- FREAD negative count ---"
+s = FREAD(h, -3)
+? "Read neg:", "[" + s + "]"
+
+? "--- FWRITE empty string ---"
+n = FWRITE(h, "")
+? "Wrote empty:", n
+
+? "--- FREAD with invalid handle ---"
+s = FREAD(999, 10)
+? "Bad handle:", "[" + s + "]"
+
+? "--- FWRITE with invalid handle ---"
+n = FWRITE(999, "test")
+? "Bad handle:", n
+
+? "FCLOSE:", FCLOSE(h)
+QUIT

@@ -1,0 +1,9 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Before call: x=100
+In greet: x=999
+After call: x=100
+In addnums: 10 + 20 = 30
+After addnums: result= 30
+. Final x=100

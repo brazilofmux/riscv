@@ -1,0 +1,14 @@
+STORE 10 TO a
+STORE 20 TO b
+? a + b
+? a * b
+? a - b
+? b / a
+STORE "World" TO name
+? "Hello " + name
+STORE .T. TO x
+STORE .F. TO y
+? x .AND. y
+? x .OR. y
+? .NOT. y
+QUIT

@@ -1,0 +1,17 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. 1
+2
+3
+4
+5
+After first loop
+Loop 1
+Loop 2
+Loop 3
+After exit loop
+Odd: 1
+Odd: 3
+Odd: 5
+Done

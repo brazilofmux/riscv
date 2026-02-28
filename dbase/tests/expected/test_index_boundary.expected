@@ -1,0 +1,43 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database PEOPLE.DBF created with 1 field(s).
+. Database PEOPLE.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . Record 4 added.
+. . Record 5 added.
+. . Record 6 added.
+. . Record 7 added.
+. . Record 8 added.
+. . Record 9 added.
+. . Record 10 added.
+. . Record 11 added.
+. . Record 12 added.
+. . Record 13 added.
+. . Record 14 added.
+. . Record 15 added.
+. . Record 16 added.
+. . Record 17 added.
+. . Record 18 added.
+. . Record 19 added.
+. . Record 20 added.
+. . Record 21 added.
+. . 21 record(s) indexed.
+. T1: SEEK boundary KEY011
+. . .T.
+. KEY011
+. Database closed.
+. . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database SHORT.DBF created with 1 field(s).
+. Database SHORT.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . 3 record(s) indexed.
+. T2: SEEK AB
+. . .T.
+. AB
+. Database closed.

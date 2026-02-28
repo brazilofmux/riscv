@@ -1,0 +1,22 @@
+SET TALK OFF
+* Test SET MESSAGE TO and SET WRAP
+SET MESSAGE TO 24
+SET WRAP ON
+SET
+* Test @PROMPT parsing
+@ 5,10 PROMPT "Option A" MESSAGE "First option"
+@ 6,10 PROMPT "Option B" MESSAGE "Second option"
+@ 7,10 PROMPT "Option C"
+* MENU TO in non-terminal mode picks first option
+MENU TO choice
+? "Choice:", choice
+* Clear and test again with different prompts
+@ 10,5 PROMPT "Alpha"
+@ 11,5 PROMPT "Beta"
+MENU TO pick
+? "Pick:", pick
+* Test SET MESSAGE TO (disable)
+SET MESSAGE TO
+SET WRAP OFF
+SET
+QUIT

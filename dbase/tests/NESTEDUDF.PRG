@@ -1,0 +1,17 @@
+? "--- Nested UDF Calls ---"
+? "Combo 5:", COMBO(5)
+? "Combo 0:", COMBO(0)
+? "Expr:", INC(TWICE(3)) + INC(2)
+RETURN
+
+FUNCTION INC
+PARAMETERS n
+RETURN n + 1
+
+FUNCTION TWICE
+PARAMETERS n
+RETURN n * 2
+
+FUNCTION COMBO
+PARAMETERS n
+RETURN INC(TWICE(n))

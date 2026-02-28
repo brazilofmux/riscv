@@ -1,0 +1,22 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database NAV.DBF created with 2 field(s).
+. Database NAV.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . . 1
+. First
+. . 3
+. Third
+. . 2
+. Second
+. . 3
+. . 1
+. .F.
+. . .T.
+. . .F.
+. . .T.
+

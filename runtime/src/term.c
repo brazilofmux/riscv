@@ -91,6 +91,11 @@ static int int_to_str(int val, char *buf) {
 int term_init(void) {
     term_buf_len = 0;
     term_buffering = 0;
+    /* Probe terminal: if stdout is a pipe, _term_getsize fails and we
+       return -1 so callers (e.g. dBASE) can use their fallback path. */
+    unsigned int buf[2];
+    if (_term_getsize(buf) != 0)
+        return -1;
     return 0;
 }
 

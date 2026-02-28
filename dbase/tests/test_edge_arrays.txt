@@ -1,0 +1,39 @@
+? "--- Array boundary conditions ---"
+
+DECLARE arr[5]
+arr[1] = "First"
+arr[5] = "Last"
+
+? "--- arr[0] (below lower bound) ---"
+? arr[0]
+
+? "--- arr[6] (above upper bound) ---"
+? arr[6]
+
+? "--- arr[-1] (negative) ---"
+? arr[-1]
+
+? "--- Normal access for sanity ---"
+? arr[1]
+? arr[5]
+
+? "--- 2D array bounds ---"
+DECLARE m[3,3]
+m[1,1] = "OK"
+
+? "--- m[0,1] ---"
+? m[0,1]
+
+? "--- m[4,1] ---"
+? m[4,1]
+
+? "--- m[1,0] ---"
+? m[1,0]
+
+? "--- m[1,4] ---"
+? m[1,4]
+
+? "--- STORE to array without index ---"
+STORE "test" TO arr
+
+QUIT

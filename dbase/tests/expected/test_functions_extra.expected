@@ -1,0 +1,22 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. --- ALLTRIM ---
+. >hello<
+. --- EMPTY ---
+. .T.
+. .T.
+. .T.
+. .T.
+. .F.
+. .F.
+. .F.
+. .F.
+. .F.
+. --- PADL/PADR/PADC ---
+. >     hello<
+. >hello     <
+. >  hello   <
+. >*****hello<
+. >hello*****<
+. >**hello***<

@@ -1,0 +1,9 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Factorial 5: 120
+Fib 4: 3
+Fib 5: 5
+Iterative 12!: 479001600
+Iterative Fib 20: 6765
+10-deep loops total: 1024

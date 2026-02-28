@@ -1,0 +1,59 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. . . . . . . . . 5
+. 3
+. . Alice
+. Bob
+. Charlie
+. . Alice
+. 
+. Bob
+. . 
+. Bob
+. . . . . . . . . . . X
+. Y
+. Z
+. . .T.
+. .F.
+. HeLLO
+. xx
+. 4
+. 1
+. . 04/15/25
+. 02/28/25
+. 04 July 2026
+. December 25, 2025
+. . 640
+. 100000000
+. . . . . Settings changed
+. . . . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database SDFTEST.DBF created with 2 field(s).
+. Database SDFTEST.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . 2 record(s) copied.
+. Database closed.
+. . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database SDFTEST2.DBF created with 2 field(s).
+. Database SDFTEST2.DBF opened with 0 record(s).
+. 2 record(s) added.
+. Record# NAME                 AGE
+      1 Alice                 25
+      2 Bob                   30
+. Database closed.
+. File erased.
+. File erased.
+. File erased.
+. . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database AFTEST.DBF created with 4 field(s).
+. Database AFTEST.DBF opened with 0 record(s).
+. . 4
+. FNAME
+. C
+. LNAME
+. AGE
+. 3
+. Database closed.
+. File erased.
+

@@ -1,0 +1,10 @@
+STORE "Hello" TO a
+STORE "Hel" TO b
+SET EXACT OFF
+? a = b
+? b = a
+SET EXACT ON
+? a = b
+? b = a
+? a = "Hello"
+QUIT

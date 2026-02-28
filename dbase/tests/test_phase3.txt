@@ -1,0 +1,46 @@
+* Phase 3 tests: Functions and operators
+
+* STUFF()
+? STUFF("ABCDEF", 3, 2, "XY")
+? STUFF("Hello", 1, 0, "Say ")
+? STUFF("ABC", 2, 1, "")
+
+* TRANSFORM()
+? TRANSFORM("abc", "!!!")
+? TRANSFORM("123", "999")
+
+* ISALPHA / ISUPPER / ISLOWER
+? ISALPHA("Hello")
+? ISALPHA("123")
+? ISUPPER("Hello")
+? ISUPPER("hello")
+? ISLOWER("hello")
+? ISLOWER("Hello")
+
+* VERSION / OS
+? VERSION()
+? OS()
+
+* INKEY / LASTKEY / READKEY / ERROR / MESSAGE
+? INKEY()
+? LASTKEY()
+? ERROR()
+? MESSAGE()
+
+* Exponentiation ** and ^
+? 2 ** 3
+? 3 ^ 2
+? 10 ** 0
+
+* Exact equality ==
+STORE "ABC" TO x
+SET EXACT OFF
+? x = "AB"
+? x == "AB"
+? x == "ABC"
+
+* ! as .NOT.
+? ! .T.
+? ! .F.
+
+QUIT

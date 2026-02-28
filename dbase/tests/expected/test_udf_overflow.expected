@@ -1,0 +1,6 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. . . *** UDF recursion overflow in UDFDEPTH.PRG line 6
+NIL
+. AFTER

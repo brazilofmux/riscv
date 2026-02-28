@@ -1,0 +1,36 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. . Currently selected database:
+  No database is in use
+
+File search path:
+  (none)
+
+Default disk drive: .
+
+TALK      = OFF
+DELETED   = OFF
+EXACT     = OFF
+HEADING   = ON
+CONFIRM   = OFF
+BELL      = ON
+SAFETY    = ON
+CONSOLE   = ON
+DECIMALS  = 2
+DATE      = AMERICAN
+DEVICE    = SCREEN
+CENTURY   = OFF
+ESCAPE    = ON
+ECHO      = OFF
+MARGIN    = 0
+MESSAGE   = (off)
+WRAP      = OFF
+MEMOWIDTH = 50
+EPOCH     = 0
+MARK      = (default)
+SOFTSEEK  = OFF
+UNIQUE    = OFF
+ALTERNATE = OFF
+PATH      = (none)
+

@@ -1,0 +1,26 @@
+* Phase 5 tests: Error handling
+* Test ERROR() / MESSAGE() defaults
+? ERROR()
+? MESSAGE()
+* Trigger type mismatch error
+? 1 + "abc"
+? ERROR()
+? MESSAGE()
+* Test ON ERROR handler
+STORE 0 TO err_code
+STORE "" TO err_msg
+ON ERROR DO ERRHAND
+? 1 / 0
+? err_code
+? err_msg
+ON ERROR
+* Test no-database error
+CLOSE DATABASES
+LIST
+? ERROR()
+* Test SUSPEND/RESUME
+DO SUSPEND_TEST
+? step
+RESUME
+? step
+QUIT

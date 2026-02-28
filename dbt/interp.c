@@ -148,6 +148,15 @@ static int handle_ecall(rv32_state_t *s, rv32_binary_t *bin) {
         }
         break;
 
+    case 46:  /* ftruncate(fd, length) */
+        {
+            int fd = (int)s->x[10];
+            off_t length = (off_t)(int32_t)s->x[11];
+            int result = ftruncate(fd, length);
+            s->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
     case 80:  /* fstat — stub */
         s->x[10] = (uint32_t)-1;
         break;

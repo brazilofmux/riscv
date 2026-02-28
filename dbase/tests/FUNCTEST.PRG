@@ -1,0 +1,21 @@
+* Test user-defined FUNCTION
+? "Double 5:", DOUBLE(5)
+? "Double 10:", DOUBLE(10)
+? "Add:", ADDNUMS(3, 4)
+? "Factorial 5:", FACT(5)
+RETURN
+
+FUNCTION DOUBLE
+PARAMETERS n
+RETURN n * 2
+
+FUNCTION ADDNUMS
+PARAMETERS a, b
+RETURN a + b
+
+FUNCTION FACT
+PARAMETERS n
+IF n <= 1
+  RETURN 1
+ENDIF
+RETURN n * FACT(n - 1)

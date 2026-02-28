@@ -1,0 +1,22 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Field name: Database MUNIQ.DBF created with 2 field(s).
+. Database MUNIQ.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . 2 record(s) indexed.
+. . . . DBT size before: 1536
+. FERROR: 0
+. FCLOSE: .T.
+. . . *** Uniqueness violation on index MUNIQ.NDX
+. After REPLACE: B         
+. . . . DBT size after: 1536
+. FCLOSE: .T.
+. . *** Uniqueness violation on index MUNIQ.NDX
+. After 2nd REPLACE: B         
+. . . . DBT size after 2nd: 1536
+. Size unchanged: .T.
+. FCLOSE: .T.
+

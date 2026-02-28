@@ -1,0 +1,3 @@
+FUNCTION BUMP
+gc = gc + 1
+RETURN gc

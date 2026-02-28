@@ -1,0 +1,16 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. . . 0
+. 
+. . *** Type mismatch in +
+. 15
+. Type mismatch in +
+. . . . . . 21
+. Division by zero
+. . . . *** No database in use
+. 36
+. . Suspended.
+. 1
+. . 2
+

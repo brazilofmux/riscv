@@ -1,0 +1,127 @@
+SET TALK OFF
+* Phase 7: B-Tree Indexing Tests
+* Test 1: INDEX ON + SEEK (basic, existing behavior)
+CREATE PEOPLE
+NAME
+C
+20
+AGE
+N
+3
+0
+
+USE PEOPLE
+APPEND BLANK
+REPLACE NAME WITH "Charlie", AGE WITH 30
+APPEND BLANK
+REPLACE NAME WITH "Alice", AGE WITH 25
+APPEND BLANK
+REPLACE NAME WITH "Bob", AGE WITH 35
+INDEX ON NAME TO NAMES
+? "T1: INDEX ON"
+GO TOP
+? TRIM(NAME), AGE
+SKIP
+? TRIM(NAME), AGE
+SKIP
+? TRIM(NAME), AGE
+
+* Test 2: Incremental insert - APPEND BLANK + REPLACE updates index
+APPEND BLANK
+REPLACE NAME WITH "Aaron", AGE WITH 20
+? "T2: INCREMENTAL INSERT"
+GO TOP
+? TRIM(NAME), AGE
+SEEK "Aaron"
+? FOUND(), TRIM(NAME), AGE
+
+* Test 3: REPLACE updates index position
+GO TOP
+SKIP
+? "T3: Before REPLACE:", TRIM(NAME)
+REPLACE NAME WITH "Zara"
+? "T3: After REPLACE:", TRIM(NAME)
+GO TOP
+? "T3: New top:", TRIM(NAME)
+GO BOTTOM
+? "T3: New bottom:", TRIM(NAME)
+
+* Test 4: SEEK after incremental changes
+SEEK "Charlie"
+? "T4: SEEK Charlie:", FOUND(), TRIM(NAME), AGE
+SEEK "Aaron"
+? "T4: SEEK Aaron:", FOUND(), TRIM(NAME), AGE
+SEEK "Zara"
+? "T4: SEEK Zara:", FOUND(), TRIM(NAME), AGE
+SEEK "NotThere"
+? "T4: SEEK NotThere:", FOUND()
+
+* Test 5: Index order navigation
+? "T5: Full index order:"
+GO TOP
+? TRIM(NAME)
+SKIP
+? TRIM(NAME)
+SKIP
+? TRIM(NAME)
+SKIP
+? TRIM(NAME)
+
+* Test 6: ZAP clears index
+ZAP
+? "T6: ZAP EOF:", EOF()
+APPEND BLANK
+REPLACE NAME WITH "NewGuy", AGE WITH 99
+GO TOP
+? "T6: After re-add:", TRIM(NAME), AGE
+
+* Test 7: PACK rebuilds index
+APPEND BLANK
+REPLACE NAME WITH "DeleteMe", AGE WITH 0
+APPEND BLANK
+REPLACE NAME WITH "KeepMe", AGE WITH 50
+SEEK "DeleteMe"
+DELETE
+PACK
+? "T7: PACK remaining:"
+GO TOP
+? TRIM(NAME)
+SKIP
+? TRIM(NAME)
+
+* Test 8: Multiple indexes - reopen with index
+USE
+USE PEOPLE INDEX NAMES
+? "T8: REOPEN"
+APPEND BLANK
+REPLACE NAME WITH "Delta", AGE WITH 40
+SEEK "Delta"
+? "T8: SEEK Delta:", FOUND(), TRIM(NAME)
+
+* Test 9: APPEND FROM with index
+CREATE EXTRA
+NAME
+C
+20
+AGE
+N
+3
+0
+
+USE EXTRA
+APPEND BLANK
+REPLACE NAME WITH "Eve", AGE WITH 28
+APPEND BLANK
+REPLACE NAME WITH "Frank", AGE WITH 33
+USE
+USE PEOPLE INDEX NAMES
+APPEND FROM EXTRA
+? "T9: APPEND FROM"
+SEEK "Eve"
+? "T9: SEEK Eve:", FOUND(), TRIM(NAME)
+SEEK "Frank"
+? "T9: SEEK Frank:", FOUND(), TRIM(NAME)
+? "T9: Total:", RECCOUNT()
+
+USE
+QUIT

@@ -1,0 +1,22 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database PEOPLE.DBF created with 2 field(s).
+. Database PEOPLE.DBF opened with 0 record(s).
+. Record 1 added.
+. . Database closed.
+. File copied.
+. Copied
+. Database BACKUP.DBF opened with 1 record(s).
+. . Alice 25
+. Database closed.
+. File renamed.
+. Renamed
+. Database SAVED.DBF opened with 1 record(s).
+. . Alice 25
+. Database closed.
+. File erased.
+. Erased
+. File erased.
+

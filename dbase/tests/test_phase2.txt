@@ -1,0 +1,30 @@
+* Phase 2 tests: Screen output, print routing, PROW/PCOL, EJECT, ??
+
+* Test ?? (print without newline) followed by ? (print with newline)
+?? "Hello "
+?? "World"
+? " Done"
+
+* Test PROW()/PCOL() initial values
+? PROW()
+? PCOL()
+
+* Test SET DEVICE TO PRINT with @SAY
+SET DEVICE TO PRINT
+@ 0,0 SAY "Report Title"
+@ 0,20 SAY "Page 1"
+@ 1,0 SAY "============"
+? PROW()
+? PCOL()
+SET DEVICE TO SCREEN
+
+* Test EJECT resets printer position
+EJECT
+? PROW()
+? PCOL()
+
+* Test SET CONSOLE (no-op for now, just verify accepted)
+SET CONSOLE OFF
+SET CONSOLE ON
+
+QUIT

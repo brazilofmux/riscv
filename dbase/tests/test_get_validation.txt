@@ -1,0 +1,28 @@
+SET TALK OFF
+val1 = 50
+val2 = "Edit Me"
+val3 = 0
+
+? "--- Testing WHEN (val3=0 enables val2) ---"
+@ 1,1 GET val1 RANGE 1, 100
+@ 2,1 GET val2 WHEN val3 = 0
+@ 3,1 GET val3 VALID val3 >= 0
+READ
+60
+"Edited"
+0
+? "Values after first READ:", val1, val2, val3
+
+? "--- Testing VALID (val1 must be > 10) ---"
+@ 1,1 GET val1 VALID val1 > 10
+READ
+15
+? "Value of val1:", val1
+
+? "--- Testing WHEN (val3=1 disables val2) ---"
+val3 = 1
+@ 1,1 GET val2 WHEN val3 = 0
+READ
+? "Value of val2 (should be unchanged):", val2
+
+QUIT

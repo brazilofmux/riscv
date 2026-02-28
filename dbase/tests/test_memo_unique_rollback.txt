@@ -1,0 +1,39 @@
+CREATE MUNIQ
+NAME
+C
+10
+NOTES
+M
+
+USE MUNIQ
+APPEND BLANK
+REPLACE NAME WITH "A", NOTES WITH "memo-one"
+APPEND BLANK
+REPLACE NAME WITH "B", NOTES WITH "memo-two"
+INDEX ON NAME TO MUNIQ UNIQUE
+
+h = FOPEN("MUNIQ.DBT", 0)
+size1 = FSEEK(h, 0, 2)
+? "DBT size before:", size1
+? "FERROR:", FERROR()
+? "FCLOSE:", FCLOSE(h)
+
+GO 2
+REPLACE NAME WITH "A", NOTES WITH "memo-dup"
+? "After REPLACE:", NAME
+
+h = FOPEN("MUNIQ.DBT", 0)
+size2 = FSEEK(h, 0, 2)
+? "DBT size after:", size2
+? "FCLOSE:", FCLOSE(h)
+
+REPLACE NAME WITH "A", NOTES WITH "memo-dup2"
+? "After 2nd REPLACE:", NAME
+
+h = FOPEN("MUNIQ.DBT", 0)
+size3 = FSEEK(h, 0, 2)
+? "DBT size after 2nd:", size3
+? "Size unchanged:", size3 = size2
+? "FCLOSE:", FCLOSE(h)
+
+QUIT

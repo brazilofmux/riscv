@@ -1,0 +1,7 @@
+? "--- Directory Services ---"
+? "Checking if SCAN_TEST.PRG exists: ", FILE("SCAN_TEST.PRG")
+? "Checking if NOFILE.DBF exists: ", FILE("NOFILE.DBF")
+? "All > PRG: ", ADIR() > ADIR("*.PRG")
+? "PRG > 0: ", ADIR("*.PRG") > 0
+? "ZZZ = 0: ", ADIR("*.ZZZ") = 0
+QUIT

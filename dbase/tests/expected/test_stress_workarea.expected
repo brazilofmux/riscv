@@ -1,0 +1,85 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WAMASTER.DBF created with 2 field(s).
+. Database WAMASTER.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WADETAIL.DBF created with 2 field(s).
+. Database WADETAIL.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WA_A.DBF created with 1 field(s).
+. Database WA_A.DBF opened with 0 record(s).
+. Record 1 added.
+. . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WA_B.DBF created with 1 field(s).
+. Database WA_B.DBF opened with 0 record(s).
+. Record 1 added.
+. . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WA_C.DBF created with 1 field(s).
+. Database WA_C.DBF opened with 0 record(s).
+. Record 1 added.
+. . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WA_D.DBF created with 1 field(s).
+. Database WA_D.DBF opened with 0 record(s).
+. Record 1 added.
+. . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WA_E.DBF created with 1 field(s).
+. Database WA_E.DBF opened with 0 record(s).
+. Record 1 added.
+. . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WA_F.DBF created with 1 field(s).
+. Database WA_F.DBF opened with 0 record(s).
+. Record 1 added.
+. . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WA_G.DBF created with 1 field(s).
+. Database WA_G.DBF opened with 0 record(s).
+. Record 1 added.
+. . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WA_H.DBF created with 1 field(s).
+. Database WA_H.DBF opened with 0 record(s).
+. Record 1 added.
+. . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WA_I.DBF created with 1 field(s).
+. Database WA_I.DBF opened with 0 record(s).
+. Record 1 added.
+. . . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Database WA_J.DBF created with 1 field(s).
+. Database WA_J.DBF opened with 0 record(s).
+. Record 1 added.
+. . . . --- Same DB two areas ---
+Database WAMASTER.DBF opened with 3 record(s).
+Area 1: Alice
+Database WAMASTER.DBF opened with 3 record(s).
+Area 2: Alice
+Area 1 after: Modified
+Area 2 after: Modified
+--- SET RELATION ---
+Database WAMASTER.DBF opened with 3 record(s).
+Database WADETAIL.DBF opened with 3 record(s).
+3 record(s) indexed.
+Master 1: 1 Detail: Detail-A
+Master 2: 2 Detail: Detail-B
+Master 3: 3 Detail: Detail-C
+--- 10 work areas ---
+Database WA_A.DBF opened with 1 record(s).
+Database WA_B.DBF opened with 1 record(s).
+Database WA_C.DBF opened with 1 record(s).
+Database WA_D.DBF opened with 1 record(s).
+Database WA_E.DBF opened with 1 record(s).
+Database WA_F.DBF opened with 1 record(s).
+Database WA_G.DBF opened with 1 record(s).
+Database WA_H.DBF opened with 1 record(s).
+Database WA_I.DBF opened with 1 record(s).
+Database WA_J.DBF opened with 1 record(s).
+Area 1: AREA-A
+Area 5: AREA-E
+Area 10: AREA-J
+From 10, area 1: AREA-A
+From 10, area 2: AREA-B

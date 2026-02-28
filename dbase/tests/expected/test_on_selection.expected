@@ -1,0 +1,10 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Popup TESTPOP:
+  1. Alpha
+  2. Beta
+  3. Gamma
+Handler: BAR()=1 PROMPT()=Alpha
+After popup, BAR(): 1
+After popup, PROMPT(): Alpha

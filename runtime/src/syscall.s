@@ -66,3 +66,11 @@ _unlinkat:
     ecall
     ret
     .size _unlinkat, . - _unlinkat
+
+    .global _ftruncate
+    .type _ftruncate, @function
+_ftruncate:
+    li      a7, 46           # ftruncate(fd=a0, length=a1)
+    ecall
+    ret
+    .size _ftruncate, . - _ftruncate

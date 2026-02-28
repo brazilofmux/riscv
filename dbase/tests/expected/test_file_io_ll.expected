@@ -1,0 +1,13 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. File created, handle = 1
+Bytes written = 26
+FSEEK to start: 0
+Read first 5 bytes: Hello
+FCLOSE: .T.
+--- Test FOPEN ---
+File opened for read, handle = 1
+FSEEK to end: 26
+File size (tell): 26
+FCLOSE: .T.

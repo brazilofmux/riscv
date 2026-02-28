@@ -1,0 +1,75 @@
+SET TALK OFF
+* Test Tier 3 compatibility features
+* --- DBSTRUCT() ---
+CREATE T3TEST
+NAME
+C
+20
+CITY
+C
+15
+AGE
+N
+3
+0
+
+USE T3TEST
+a = DBSTRUCT()
+? a[1,1], a[1,2], a[1,3], a[1,4]
+? a[2,1], a[2,2], a[2,3], a[2,4]
+? a[3,1], a[3,2], a[3,3], a[3,4]
+* --- SYS() ---
+? SYS(0)
+? SYS(3)
+? SYS(5)
+? SYS(6)
+? SYS(10)
+? SYS(17)
+? SYS(2001)
+? SYS(999)
+* --- SET() ---
+? SET(1)
+? SET(3)
+? SET(8)
+? SET(17)
+* --- LOOKUP() ---
+APPEND BLANK
+REPLACE NAME WITH "Alice", CITY WITH "Boston", AGE WITH 30
+APPEND BLANK
+REPLACE NAME WITH "Bob", CITY WITH "Denver", AGE WITH 25
+APPEND BLANK
+REPLACE NAME WITH "Carol", CITY WITH "Miami", AGE WITH 35
+GO TOP
+? TRIM(LOOKUP("CITY", "Bob", "NAME"))
+? LOOKUP("CITY", "Nobody", "NAME")
+* --- SET PATH ---
+SET PATH TO /tmp;/var
+? "Path set"
+SET PATH TO
+* --- SET ALTERNATE ---
+SET ALTERNATE TO ALTLOG.TXT
+SET ALTERNATE ON
+? "Logged line"
+SET ALTERNATE OFF
+CLOSE ALTERNATE
+? "After alternate"
+* --- INDEX ON ... FOR ---
+INDEX ON NAME TO T3NAME FOR AGE > 28
+GO TOP
+? TRIM(NAME)
+SKIP
+? TRIM(NAME)
+? "Filtered:", RECCOUNT()
+* --- INDEX ON ... DESCENDING ---
+INDEX ON NAME TO T3DESC DESCENDING
+GO TOP
+? TRIM(NAME)
+SKIP
+? TRIM(NAME)
+SKIP
+? TRIM(NAME)
+* --- BEGIN SEQUENCE / RECOVER ---
+DO T3SEQ.PRG
+* --- QUIT ---
+USE
+QUIT

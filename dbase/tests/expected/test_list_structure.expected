@@ -1,0 +1,45 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Type (C/N/D/L/M): Field name: Type (C/N/D/L/M): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database LSTRUC.DBF created with 5 field(s).
+. Database LSTRUC.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . --- LIST STRUCTURE ---
+. Structure for database: LSTRUC.DBF
+Number of records: 2
+Header size: 193
+Record size: 43
+Field  Name        Type  Width  Dec
+    1  NAME        C      20      0
+    2  AGE         N       3      0
+    3  HIRED       D       8      0
+    4  ACTIVE      L       1      0
+    5  SALARY      N      10      2
+** Total **                  43
+. --- DISPLAY STRUCTURE ---
+. Structure for database: LSTRUC.DBF
+Number of records: 2
+Header size: 193
+Record size: 43
+Field  Name        Type  Width  Dec
+    1  NAME        C      20      0
+    2  AGE         N       3      0
+    3  HIRED       D       8      0
+    4  ACTIVE      L       1      0
+    5  SALARY      N      10      2
+** Total **                  43
+. --- COPY STRUCTURE EXTENDED ---
+. 5 field(s) copied to LSEXT.DBF.
+. Database LSEXT.DBF opened with 5 record(s).
+. Extended structure DBF:
+. Record 1:
+. . NAME       C 20 0
+. . AGE        N 3 0
+. . HIRED      D 8 0
+. . ACTIVE     L 1 0
+. . SALARY     N 10 2
+. Field count: 5
+. Database closed.
+. Done

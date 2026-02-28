@@ -1,0 +1,4 @@
+? "Before clear"
+CLEAR
+? "After clear"
+QUIT

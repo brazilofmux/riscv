@@ -1,0 +1,10 @@
+CREATE SMINUS
+C1
+C
+6
+
+USE SMINUS
+APPEND BLANK
+REPLACE C1 WITH "A  " - "B  "
+? "[" + C1 + "]"
+QUIT

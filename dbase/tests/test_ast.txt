@@ -1,0 +1,47 @@
+* Test AST expressions: parse once, evaluate many
+* Arithmetic precedence
+? 2 + 3 * 4
+? (1 + 2) * (3 + 4)
+* Logical operators
+? .T. .AND. .F.
+? .NOT. .F.
+? 5 > 3 .AND. 2 < 10
+* String concat
+? "Hello" + " " + "World"
+* Power operator
+? 2 ** 10
+* Create test database for FOR/WHILE/FILTER tests
+CREATE ASTDB
+NAME
+C
+20
+SALARY
+N
+10
+2
+
+USE ASTDB
+APPEND BLANK
+REPLACE NAME WITH "Smith", SALARY WITH 50000
+APPEND BLANK
+REPLACE NAME WITH "Jones", SALARY WITH 60000
+APPEND BLANK
+REPLACE NAME WITH "Brown", SALARY WITH 45000
+APPEND BLANK
+REPLACE NAME WITH "Davis", SALARY WITH 70000
+APPEND BLANK
+REPLACE NAME WITH "Smith", SALARY WITH 55000
+* LIST FOR (AST compiled once, evaluated per record)
+LIST FOR SALARY > 50000
+* COUNT with FOR
+COUNT FOR NAME = "Smith"
+* SET FILTER (AST stored in work area)
+SET FILTER TO SALARY >= 50000
+LIST
+SET FILTER TO
+* DO WHILE loop via program
+DO ASTTEST.PRG
+* SCAN FOR
+DO SCANAST.PRG
+CLOSE DATABASES
+QUIT

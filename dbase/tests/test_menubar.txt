@@ -1,0 +1,42 @@
+SET TALK OFF
+* Test DEFINE MENU / DEFINE PAD / ACTIVATE MENU
+DEFINE MENU mainbar
+DEFINE PAD p_file OF mainbar PROMPT "File" MESSAGE "File operations"
+DEFINE PAD p_edit OF mainbar PROMPT "Edit" MESSAGE "Edit operations"
+DEFINE PAD p_help OF mainbar PROMPT "Help" MESSAGE "Get help"
+* Define popups for the pads
+DEFINE POPUP filepop FROM 1,0
+DEFINE BAR 1 OF filepop PROMPT "New"
+DEFINE BAR 2 OF filepop PROMPT "Open"
+DEFINE BAR 3 OF filepop PROMPT "Quit"
+DEFINE POPUP editpop FROM 1,7
+DEFINE BAR 1 OF editpop PROMPT "Cut"
+DEFINE BAR 2 OF editpop PROMPT "Copy"
+DEFINE BAR 3 OF editpop PROMPT "Paste"
+* Attach popups to pads
+ON PAD p_file OF mainbar ACTIVATE POPUP filepop
+ON PAD p_edit OF mainbar ACTIVATE POPUP editpop
+* Activate menu (non-terminal fallback)
+ACTIVATE MENU mainbar
+? "PAD():", PAD()
+? "POPUP():", POPUP()
+? "BAR():", BAR()
+? "PROMPT():", PROMPT()
+* Test RELEASE MENU
+RELEASE MENU mainbar
+ACTIVATE MENU mainbar
+* Test DEFINE MENU again and RELEASE MENUS
+DEFINE MENU bar1
+DEFINE PAD x OF bar1 PROMPT "Alpha"
+DEFINE MENU bar2
+DEFINE PAD y OF bar2 PROMPT "Beta"
+RELEASE MENUS
+ACTIVATE MENU bar1
+ACTIVATE MENU bar2
+* Test PAD with AT clause
+DEFINE MENU positioned
+DEFINE PAD pa OF positioned PROMPT "First" AT 2,5
+DEFINE PAD pb OF positioned PROMPT "Second" AT 2,20
+ACTIVATE MENU positioned
+RELEASE MENUS
+QUIT

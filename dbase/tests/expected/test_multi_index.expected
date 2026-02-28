@@ -1,0 +1,37 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database PEOPLE.DBF created with 2 field(s).
+. Database PEOPLE.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . Record 4 added.
+. . 4 record(s) indexed.
+. 4 record(s) indexed.
+. Database closed.
+. Database PEOPLE.DBF opened with 4 record(s).
+. Order 1 (NAME):
+. . Alice 25
+. . Bob 35
+. . Charlie 30
+. . David 28
+. Order set to 2 (AGES.NDX).
+. Order 2 (AGE):
+. . Alice 25
+. . David 28
+. . Charlie 30
+. . Bob 35
+. Natural record order.
+. Natural order:
+. . Charlie 30
+. . Alice 25
+. . Bob 35
+. . David 28
+. Order set to 1 (NAMES.NDX).
+. . .T. Charlie 30
+. Order set to 2 (AGES.NDX).
+. . .T. David 28
+. Database closed.
+

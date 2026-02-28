@@ -1,0 +1,83 @@
+* Test Tier 1 compatibility functions
+* String functions
+? OCCURS("ab", "abcababc")
+? RAT("ab", "abcababc")
+? PROPER("hello world")
+? STRTRAN("Hello World", "World", "SLOW-32")
+? BETWEEN(5, 1, 10)
+? BETWEEN(15, 1, 10)
+? SOUNDEX("Robert")
+? SOUNDEX("Rupert")
+* System stubs
+? RLOCK()
+? FLOCK()
+? TYPE(GETENV("NONEXIST"))
+* SELECT() function
+? SELECT()
+SELECT 3
+? SELECT()
+SELECT 1
+* Database info — no database open
+? USED()
+? DBF()
+? FCOUNT()
+? RECSIZE()
+? ALIAS()
+? FIELD(1)
+? ORDER()
+* Create database and test database info functions
+CREATE T1COMPAT
+NAME
+C
+20
+AGE
+N
+3
+0
+CITY
+C
+15
+
+USE T1COMPAT ALIAS MYDB
+? USED()
+? FCOUNT()
+? FIELD(1)
+? FIELD(2)
+? FIELD(3)
+? FIELDNUM("AGE")
+? FSIZE("NAME")
+? RECSIZE()
+? ALIAS()
+APPEND BLANK
+REPLACE NAME WITH "Alice", AGE WITH 25, CITY WITH "Boston"
+APPEND BLANK
+REPLACE NAME WITH "Bob", AGE WITH 30, CITY WITH "Denver"
+APPEND BLANK
+REPLACE NAME WITH "Charlie", AGE WITH 35, CITY WITH "Boston"
+INDEX ON NAME TO T1NAMES
+? KEY()
+? ORDER()
+? NDX(1)
+* SEEK() function form
+? SEEK("Bob")
+? TRIM(NAME), AGE
+? SEEK("Zach")
+? FOUND()
+* SET SOFTSEEK
+SET SOFTSEEK ON
+SEEK "Daisy"
+? FOUND()
+SET SOFTSEEK OFF
+* SET UNIQUE
+SET UNIQUE ON
+INDEX ON CITY TO T1CITY
+? RECCOUNT()
+SET UNIQUE OFF
+* BLANK command
+GO 1
+? TRIM(NAME)
+BLANK
+? TRIM(NAME) = ""
+* TYPE command — write and type a file
+USE
+QUIT

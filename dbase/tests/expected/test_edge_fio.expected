@@ -1,0 +1,23 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. --- FWRITE/FREAD edge cases ---
+. . . --- FWRITE zero bytes via 3rd arg ---
+. . Wrote: 0
+. . --- FWRITE negative count ---
+. . Wrote: 0
+. . --- FWRITE normal for later read ---
+. . Wrote: 5
+. . --- FREAD zero count ---
+. FSEEK: 0
+. . Read zero: []
+. . --- FREAD negative count ---
+. . Read neg: []
+. . --- FWRITE empty string ---
+. . Wrote empty: 0
+. . --- FREAD with invalid handle ---
+. . Bad handle: []
+. . --- FWRITE with invalid handle ---
+. . Bad handle: 0
+. . FCLOSE: .T.
+

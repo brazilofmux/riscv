@@ -1,0 +1,10 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. --- Directory Services ---
+. Checking if SCAN_TEST.PRG exists:  .T.
+. Checking if NOFILE.DBF exists:  .F.
+. All > PRG:  .F.
+. PRG > 0:  .F.
+. ZZZ = 0:  .T.
+

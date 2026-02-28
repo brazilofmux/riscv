@@ -1,0 +1,7 @@
+SET COLOR TO W/N
+? "White on black"
+SET COLOR TO R/W
+? "Red on white"
+SET COLOR TO G/B
+? "Green on blue"
+QUIT

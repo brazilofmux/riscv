@@ -1,0 +1,35 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database IDXTST.DBF created with 2 field(s).
+. Database IDXTST.DBF opened with 0 record(s).
+. --- Index order ---
+First: NAME  1 20
+Last: NAME 20 1
+--- REPLACE indexed key ---
+Natural record order.
+Order set to 1 (IDXNAME.NDX).
+New first: RN  1
+New last: RN 20
+Seek RN  1: .T.
+Seek RN 20: .T.
+--- Multiple indexes ---
+Order set to 1 (IDXNAME.NDX).
+Order 1 top: RN  1
+Order 2 top: RN  1
+--- Unique index ---
+Count: 3
+*** Uniqueness violation on index UNIQIDX.NDX in STRESS_INDEX.PRG line 60
+After dup: 4
+AAA val: .T. 1
+--- Unique REPLACE ---
+Before: BBB 2
+*** Uniqueness violation on index UNIQIDX.NDX in STRESS_INDEX.PRG line 70
+After: BBB 2
+--- Delete pack reindex ---
+After pack: 3
+AAA: .T. 1
+CCC: .T. 3
+BBB: .F.
+

@@ -1,0 +1,89 @@
+* Work area stress test
+
+* Test 1: Same DB in two areas
+? "--- Same DB two areas ---"
+SELECT 1
+USE WAMASTER
+GO TOP
+? "Area 1:", TRIM(NAME)
+SELECT 2
+USE WAMASTER ALIAS COPY2
+GO TOP
+? "Area 2:", TRIM(COPY2->NAME)
+SELECT 1
+REPLACE NAME WITH "Modified"
+? "Area 1 after:", TRIM(NAME)
+SELECT 2
+GO TOP
+? "Area 2 after:", TRIM(COPY2->NAME)
+* Restore original
+SELECT 1
+REPLACE NAME WITH "Alice"
+
+* Test 2: SET RELATION chain
+? "--- SET RELATION ---"
+SELECT 1
+USE WAMASTER
+SELECT 2
+USE WADETAIL
+INDEX ON STR(ID, 5) TO WADETIDN
+
+SELECT 1
+SET RELATION TO STR(ID, 5) INTO B
+GO TOP
+? "Master 1:", ID, "Detail:", TRIM(B->INFO)
+SKIP
+? "Master 2:", ID, "Detail:", TRIM(B->INFO)
+SKIP
+? "Master 3:", ID, "Detail:", TRIM(B->INFO)
+SET RELATION TO
+
+* Test 3: 10 work areas
+? "--- 10 work areas ---"
+CLOSE DATABASES
+SELECT 1
+USE WA_A
+GO TOP
+SELECT 2
+USE WA_B
+GO TOP
+SELECT 3
+USE WA_C
+GO TOP
+SELECT 4
+USE WA_D
+GO TOP
+SELECT 5
+USE WA_E
+GO TOP
+SELECT 6
+USE WA_F
+GO TOP
+SELECT 7
+USE WA_G
+GO TOP
+SELECT 8
+USE WA_H
+GO TOP
+SELECT 9
+USE WA_I
+GO TOP
+SELECT 10
+USE WA_J
+GO TOP
+
+* Verify via SELECT + local field access
+SELECT 1
+? "Area 1:", TRIM(LABEL)
+SELECT 5
+? "Area 5:", TRIM(LABEL)
+SELECT 10
+? "Area 10:", TRIM(LABEL)
+
+* Cross-area reference
+SELECT 10
+? "From 10, area 1:", TRIM(A->LABEL)
+? "From 10, area 2:", TRIM(B->LABEL)
+
+CLOSE DATABASES
+RETURN

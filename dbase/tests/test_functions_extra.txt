@@ -1,0 +1,20 @@
+? "--- ALLTRIM ---"
+? ">" + ALLTRIM("  hello  ") + "<"
+? "--- EMPTY ---"
+? EMPTY("   ")
+? EMPTY("")
+? EMPTY(0)
+? EMPTY(.F.)
+? EMPTY({  /  /  })
+? EMPTY("not empty")
+? EMPTY(1)
+? EMPTY(.T.)
+? EMPTY({01/01/26})
+? "--- PADL/PADR/PADC ---"
+? ">" + PADL("hello", 10) + "<"
+? ">" + PADR("hello", 10) + "<"
+? ">" + PADC("hello", 10) + "<"
+? ">" + PADL("hello", 10, "*") + "<"
+? ">" + PADR("hello", 10, "*") + "<"
+? ">" + PADC("hello", 10, "*") + "<"
+QUIT

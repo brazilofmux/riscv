@@ -1,0 +1,24 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database SEARCH.DBF created with 2 field(s).
+. Database SEARCH.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . Record 4 added.
+. . Record = 2
+. .T.
+. 2
+. Bob
+. Record = 4
+. .T.
+. 4
+. Dave
+. End of LOCATE scope
+. .F.
+. Record = 3
+. .T.
+. 3
+

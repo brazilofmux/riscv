@@ -1,0 +1,30 @@
+? "--- 1D Arrays ---"
+DECLARE arr1[5]
+arr1[1] = "First"
+arr1[5] = "Last"
+STORE "Middle" TO arr1[3]
+? arr1[1]
+? arr1[3]
+? arr1[5]
+? arr1[2]
+
+? "--- 2D Arrays ---"
+DECLARE arr2[3, 3]
+arr2[1,1] = "Top-Left"
+arr2[3,3] = "Bottom-Right"
+arr2[2,2] = 42
+? arr2[1,1]
+? arr2[3,3]
+? arr2[2,2]
+
+? "--- Mixed Types ---"
+DECLARE mixed[3]
+mixed[1] = 100
+mixed[2] = .T.
+mixed[3] = {01/01/26}
+? mixed[1]
+? mixed[2]
+? mixed[3]
+
+DISPLAY MEMORY
+QUIT

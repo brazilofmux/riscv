@@ -1,0 +1,29 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database SRC.DBF created with 2 field(s).
+. Database SRC.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . Database closed.
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database DEST.DBF created with 2 field(s).
+. Database DEST.DBF opened with 0 record(s).
+. 3 record(s) appended.
+. 3
+. Record# NAME            SCORE
+      1 Alice              85
+      2 Bob                92
+      3 Carol              78
+. Database closed.
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database DEST2.DBF created with 2 field(s).
+. Database DEST2.DBF opened with 0 record(s).
+. 2 record(s) appended.
+. 2
+. Record# NAME            SCORE
+      1 Alice              85
+      2 Bob                92
+

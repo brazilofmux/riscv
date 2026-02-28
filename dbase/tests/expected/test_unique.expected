@@ -1,0 +1,47 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database UNIQUE.DBF created with 2 field(s).
+. Database UNIQUE.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . . --- Non-unique index ---
+. 3 record(s) indexed.
+. Record# NAME                
+      1 Alice               
+      2 Alice               
+      3 Bob                 
+. . --- Unique index ---
+. 2 record(s) indexed.
+. Record# NAME                
+      1 Alice               
+      3 Bob                 
+. . --- REPLACE rejection ---
+. . Alice                25
+. *** Uniqueness violation on index UNIQ.NDX
+. Alice                25
+. Record# NAME                
+      1 Alice               
+      3 Bob                 
+. . --- Multi-index rejection ---
+. 3 record(s) indexed.
+. Order set to 1 (UAGE.NDX).
+. Record# NAME                 AGE
+      1 Alice                 25
+      2 Alice                 30
+      3 Bob                   35
+. . Alice                25
+. *** Uniqueness violation on index UAGE.NDX
+. Alice                25
+. Order set to 1 (UAGE.NDX).
+. Record# NAME                 AGE
+      1 Alice                 25
+      2 Alice                 30
+      3 Bob                   35
+. . Record# NAME                 AGE
+      1 Alice                 25
+      2 Alice                 30
+      3 Bob                   35
+

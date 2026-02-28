@@ -1,0 +1,25 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. . Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database PEOPLE.DBF created with 4 field(s).
+. Database PEOPLE.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . . Page title? Page width (80)? Left margin (8)? Right margin (0)? Lines per page (58)? Double space report? (Y/N) Group on expression? Sub-group on expression? Summary report only? (Y/N) Page eject after report? (Y/N) Col  1:
+  Contents?   Heading?   Width?   Decimal places? Col  2:
+  Contents?   Heading?   Width?   Decimal places? Col  3:
+  Contents?   Heading?   Width?   Decimal places? Col  4:
+  Contents?   Heading?   Width?   Decimal places?   Totals? (Y/N) Col  5:
+  Contents? Report definition TESTRPT.FRM created.
+.         John         Smith         25   50000.00
+        Jane         Doe           30   65000.00
+        Bob          Jones         35   45000.00
+                                       160000.00
+        *** Total ***
+.                                        160000.00
+        *** Total ***
+. . File erased.
+. File erased.
+

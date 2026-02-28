@@ -1,0 +1,41 @@
+CREATE ITEMS
+NAME
+C
+10
+PRICE
+N
+6
+2
+
+USE ITEMS
+APPEND BLANK
+REPLACE NAME WITH "Apple", PRICE WITH 1.50
+APPEND BLANK
+REPLACE NAME WITH "Banana", PRICE WITH 2.00
+APPEND BLANK
+REPLACE NAME WITH "Cherry", PRICE WITH 3.50
+
+? "--- CALCULATE with macro expression ---"
+STORE "PRICE" TO fld
+CALCULATE SUM(&fld) TO total
+? "Sum:", total
+
+STORE "PRICE * 2" TO expr
+CALCULATE SUM(&expr) TO doubled
+? "Doubled:", doubled
+
+? "--- CALCULATE with macro in FOR ---"
+STORE "PRICE > 2" TO cond
+CALCULATE SUM(PRICE) TO expensive FOR &cond
+? "Expensive:", expensive
+
+? "--- Non-macro CALCULATE ---"
+CALCULATE AVG(PRICE) TO avg_price
+? "Average:", avg_price
+
+? "--- Nested parens with macro ---"
+STORE "PRICE" TO f2
+CALCULATE SUM((&f2 - 1) * 2) TO nested
+? "Nested:", nested
+
+QUIT

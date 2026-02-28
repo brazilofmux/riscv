@@ -1,0 +1,10 @@
+@ 1,1 SAY "Hello World"
+?
+@ 2,5 SAY 42 + 8
+?
+@ 3,1 SAY "Name: " + "Alice"
+?
+STORE "xyz" TO x
+@ 4,1 SAY UPPER(x) PICTURE "!!!"
+?
+QUIT

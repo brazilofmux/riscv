@@ -1,0 +1,21 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. . . . . . --- Testing WHEN (val3=0 enables val2) ---
+. 
+50. 
+Edit Me. 
+0. 
+
+
+
+
+
+. Values after first READ: 60 "Edited" 0
+. . --- Testing VALID (val1 must be > 10) ---
+. 
+60. 
+. Value of val1: 15
+. . --- Testing WHEN (val3=1 disables val2) ---
+. . "Edited". . Value of val2 (should be unchanged): "Edited"
+

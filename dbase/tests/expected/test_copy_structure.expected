@@ -1,0 +1,19 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database SRC.DBF created with 2 field(s).
+. Database SRC.DBF opened with 0 record(s).
+. Record 1 added.
+. . Structure copied to EMPTY.DBF.
+. Database EMPTY.DBF opened with 0 record(s).
+. Structure for database: EMPTY.DBF
+Number of records: 0
+Header size: 97
+Record size: 21
+Field  Name        Type  Width  Dec
+    1  NAME        C      15      0
+    2  VAL         N       5      0
+** Total **                  21
+. 0
+

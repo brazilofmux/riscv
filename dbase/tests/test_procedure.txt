@@ -1,0 +1,3 @@
+DO PROCTEST
+? "Final x=" + STR(x,3)
+QUIT

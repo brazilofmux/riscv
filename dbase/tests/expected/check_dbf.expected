@@ -1,0 +1,9 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database CHECKDB.DBF created with 2 field(s).
+. Database CHECKDB.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record# NAME                 AGE
+      1 Alice                 25

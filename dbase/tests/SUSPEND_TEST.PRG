@@ -1,0 +1,3 @@
+STORE 1 TO step
+SUSPEND
+STORE 2 TO step

@@ -1,0 +1,8 @@
+STORE '"World"' TO M1
+STORE '&M1' TO M2
+STORE '&M2' TO M3
+? &M1
+? &M2
+? &M3
+? "Value:", &M3
+QUIT

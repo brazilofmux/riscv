@@ -1,0 +1,16 @@
+STORE 42 TO x
+? x
+STORE "Hello" TO msg
+? msg
+x = x + 8
+? x
+x = 100
+? x
+STORE .T. TO flag
+? flag
+DISPLAY MEMORY
+RELEASE x
+DISPLAY MEMORY
+RELEASE ALL
+DISPLAY MEMORY
+QUIT

@@ -18,6 +18,7 @@ extern int _read(int fd, void *buf, int len);
 extern int _openat(int dirfd, const char *pathname, int flags, int mode);
 extern int _close(int fd);
 extern int _lseek(int fd, int offset, int whence);
+extern int _ftruncate(int fd, int length);
 
 static FILE _stdin  = { .fd = 0, .flags = FLAG_READ, .mode = _IONBF, .ungetc_char = -1 };
 static FILE _stdout = { .fd = 1, .flags = FLAG_WRITE, .mode = _IOLBF, .ungetc_char = -1 };
@@ -429,4 +430,8 @@ int write(int fd, const void *buf, size_t count) {
 
 int lseek(int fd, int offset, int whence) {
     return _lseek(fd, offset, whence);
+}
+
+int ftruncate(int fd, int length) {
+    return _ftruncate(fd, length);
 }

@@ -1,0 +1,19 @@
+dBASE III Clone for SLOW-32
+Stage 9: AST Expressions
+
+. Enter field definitions (blank name to finish):
+Field name: Type (C/N/D/L/M): Width (1-254): Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Type (C/N/D/L/M): Width (1-19): Decimals: Field name: Database SALES.DBF created with 3 field(s).
+. Database SALES.DBF opened with 0 record(s).
+. Record 1 added.
+. . Record 2 added.
+. . Record 3 added.
+. . Record 4 added.
+. . 4 record(s)
+. 4
+. 4 record(s)
+. 26
+. 6.5
+. 3
+. 10
+. 2 record(s)
+. 90
