@@ -10,6 +10,7 @@
 #include <sys/ioctl.h>
 #include <poll.h>
 #include <math.h>
+#include <sys/stat.h>
 
 /* ---- NaN-boxing helpers ---- */
 
@@ -190,6 +191,47 @@ static int handle_ecall(rv32_state_t *s, rv32_binary_t *bin) {
             int fd = (int)s->x[10];
             off_t length = (off_t)(int32_t)s->x[11];
             int result = ftruncate(fd, length);
+            s->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
+    case 34:  /* mkdirat(dirfd, pathname, mode) */
+        {
+            uint32_t path_addr = s->x[11];
+            if (path_addr >= bin->memory_size) {
+                s->x[10] = (uint32_t)-1;
+                break;
+            }
+            const char *pathname = (const char *)(bin->memory + path_addr);
+            int mode = (int)s->x[12];
+            int result = mkdir(pathname, mode);
+            s->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
+    case 79:  /* fstatat(dirfd, pathname, statbuf, flags) */
+        {
+            int32_t dirfd = (int32_t)s->x[10];
+            uint32_t path_addr = s->x[11];
+            uint32_t buf_addr = s->x[12];
+            int flags = (int)s->x[13];
+            if (path_addr >= bin->memory_size || buf_addr + 80 > bin->memory_size) {
+                s->x[10] = (uint32_t)-1;
+                break;
+            }
+            const char *pathname = (const char *)(bin->memory + path_addr);
+            if (dirfd == -100) dirfd = AT_FDCWD;
+            struct stat host_st;
+            int result = fstatat(dirfd, pathname, &host_st, flags);
+            if (result == 0) {
+                /* Marshal host stat to guest (ILP32: mode@16, size@40) */
+                uint8_t *dst = bin->memory + buf_addr;
+                memset(dst, 0, 80);
+                uint32_t mode32 = (uint32_t)host_st.st_mode;
+                int64_t size64 = (int64_t)host_st.st_size;
+                memcpy(dst + 16, &mode32, 4);  /* st_mode */
+                memcpy(dst + 40, &size64, 8);  /* st_size */
+            }
             s->x[10] = (uint32_t)(int32_t)result;
         }
         break;

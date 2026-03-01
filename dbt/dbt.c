@@ -11,6 +11,7 @@
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <poll.h>
+#include <sys/stat.h>
 
 /* Max guest instructions per translated block */
 #define MAX_BLOCK_INSNS  64
@@ -129,6 +130,47 @@ static int handle_ecall(dbt_state_t *dbt) {
             int fd = (int)ctx->x[10];
             off_t length = (off_t)(int32_t)ctx->x[11];
             int result = ftruncate(fd, length);
+            ctx->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
+    case 34:  /* mkdirat(dirfd, pathname, mode) */
+        {
+            uint32_t path_addr = ctx->x[11];
+            if (path_addr >= dbt->bin->memory_size) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            const char *pathname = (const char *)(dbt->bin->memory + path_addr);
+            int mode = (int)ctx->x[12];
+            int result = mkdir(pathname, mode);
+            ctx->x[10] = (uint32_t)(int32_t)result;
+        }
+        break;
+
+    case 79:  /* fstatat(dirfd, pathname, statbuf, flags) */
+        {
+            int32_t dirfd = (int32_t)ctx->x[10];
+            uint32_t path_addr = ctx->x[11];
+            uint32_t buf_addr = ctx->x[12];
+            int flags = (int)ctx->x[13];
+            if (path_addr >= dbt->bin->memory_size || buf_addr + 80 > dbt->bin->memory_size) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            const char *pathname = (const char *)(dbt->bin->memory + path_addr);
+            if (dirfd == -100) dirfd = AT_FDCWD;
+            struct stat host_st;
+            int result = fstatat(dirfd, pathname, &host_st, flags);
+            if (result == 0) {
+                /* Marshal host stat to guest (ILP32: mode@16, size@40) */
+                uint8_t *dst = dbt->bin->memory + buf_addr;
+                memset(dst, 0, 80);
+                uint32_t mode32 = (uint32_t)host_st.st_mode;
+                int64_t size64 = (int64_t)host_st.st_size;
+                memcpy(dst + 16, &mode32, 4);  /* st_mode */
+                memcpy(dst + 40, &size64, 8);  /* st_size */
+            }
             ctx->x[10] = (uint32_t)(int32_t)result;
         }
         break;

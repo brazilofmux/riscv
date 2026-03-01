@@ -14,11 +14,6 @@ int chdir(const char *path) {
     return -1;
 }
 
-int mkdir(const char *path, int mode) {
-    (void)path;
-    (void)mode;
-    return -1;
-}
 
 int rmdir(const char *path) {
     (void)path;

@@ -7,7 +7,7 @@ SRCS = src/string.c src/string_extra.c src/ctype.c src/errno.c \
        src/malloc.c src/stdlib_utils.c src/stdlib_extra.c \
        src/convert.c src/convert_extra.c \
        src/printf.c src/dtoa.c src/stdio.c src/math_soft.c \
-       src/time.c src/term.c src/stubs.c
+       src/time.c src/term.c src/stat.c src/stubs.c
 
 OBJS = $(SRCS:.c=.o)
 CRT0 = crt0.o

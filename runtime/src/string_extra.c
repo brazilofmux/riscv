@@ -181,6 +181,22 @@ void *memrchr(const void *s, int c, size_t n) {
     return NULL;
 }
 
+char *strcasestr(const char *haystack, const char *needle) {
+    if (!needle[0]) return (char *)haystack;
+    for (; *haystack; haystack++) {
+        const char *h = haystack, *n = needle;
+        while (*h && *n) {
+            int ch = *h, cn = *n;
+            if (ch >= 'A' && ch <= 'Z') ch += 32;
+            if (cn >= 'A' && cn <= 'Z') cn += 32;
+            if (ch != cn) break;
+            h++; n++;
+        }
+        if (!*n) return (char *)haystack;
+    }
+    return NULL;
+}
+
 int strcoll(const char *s1, const char *s2) {
     return strcmp(s1, s2);
 }
