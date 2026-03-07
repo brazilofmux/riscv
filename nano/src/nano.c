@@ -32,6 +32,8 @@
 #define KEY_PGUP    1006
 #define KEY_PGDN    1007
 #define KEY_DEL     1008
+#define KEY_CTRL_LEFT  1009
+#define KEY_CTRL_RIGHT 1010
 
 /* Ctrl key helper */
 #define CTRL(k) ((k) & 0x1f)
@@ -318,6 +320,14 @@ static int read_key(void) {
                 if (term_kbhit()) {
                     int ch4 = term_getkey();
                     if (ch4 == '~') return KEY_HOME;
+                    if (ch4 == ';' && term_kbhit()) {
+                        int ch5 = term_getkey();
+                        if (ch5 == '5' && term_kbhit()) {
+                            int ch6 = term_getkey();
+                            if (ch6 == 'D') return KEY_CTRL_LEFT;
+                            if (ch6 == 'C') return KEY_CTRL_RIGHT;
+                        }
+                    }
                 }
                 return KEY_HOME;
             case '4':
@@ -431,7 +441,7 @@ static void editor_draw_status_bar(void) {
 }
 
 static void editor_draw_help_bar(void) {
-    const char *help = " ^S Save  ^Q Quit  ^X Save+Quit  ^F Find  ^K Cut  ^U Paste";
+    const char *help = " ^S Save  ^Q Quit  ^F Find  ^R Replace  ^K Cut  ^U Paste  ^D Dup";
     int len, i;
 
     term_gotoxy(E.screen_rows, 1);
@@ -548,6 +558,41 @@ static void editor_clamp_cx(void) {
     }
 }
 
+static int is_word_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+static void editor_move_word_left(void) {
+    /* Skip non-word chars, then skip word chars */
+    if (E.cx == 0 && E.cy > 0) {
+        E.cy--;
+        E.cx = E.lines[E.cy].len;
+    }
+    if (E.cy < E.num_lines) {
+        line_t *l = &E.lines[E.cy];
+        while (E.cx > 0 && !is_word_char(l->text[E.cx - 1]))
+            E.cx--;
+        while (E.cx > 0 && is_word_char(l->text[E.cx - 1]))
+            E.cx--;
+    }
+}
+
+static void editor_move_word_right(void) {
+    if (E.cy < E.num_lines) {
+        line_t *l = &E.lines[E.cy];
+        /* Skip word chars, then skip non-word chars */
+        while (E.cx < l->len && is_word_char(l->text[E.cx]))
+            E.cx++;
+        while (E.cx < l->len && !is_word_char(l->text[E.cx]))
+            E.cx++;
+        if (E.cx >= l->len && E.cy < E.num_lines - 1) {
+            E.cy++;
+            E.cx = 0;
+        }
+    }
+}
+
 static void editor_move_cursor(int key) {
     switch (key) {
     case KEY_UP:
@@ -598,6 +643,12 @@ static void editor_move_cursor(int key) {
         if (E.cy >= E.num_lines) E.cy = E.num_lines - 1;
         editor_clamp_cx();
         break;
+    case KEY_CTRL_LEFT:
+        editor_move_word_left();
+        break;
+    case KEY_CTRL_RIGHT:
+        editor_move_word_right();
+        break;
     }
 }
 
@@ -614,9 +665,30 @@ static void editor_insert_char(int ch) {
 
 static void editor_insert_newline(void) {
     if (E.cy >= E.num_lines) return;
+
+    /* Capture indent from current line before splitting */
+    int indent = 0;
+    {
+        line_t *l = &E.lines[E.cy];
+        while (indent < l->len && l->text[indent] == ' ')
+            indent++;
+    }
+
     editor_split_line(E.cy, E.cx);
     E.cy++;
     E.cx = 0;
+
+    /* Auto-indent: prepend leading spaces from previous line */
+    if (indent > 0) {
+        line_t *newl = &E.lines[E.cy];
+        int old_len = newl->len;
+        line_ensure_cap(newl, old_len + indent + 1);
+        memmove(newl->text + indent, newl->text, old_len + 1);
+        memset(newl->text, ' ', indent);
+        newl->len += indent;
+        E.cx = indent;
+    }
+
     E.modified = 1;
     E.quit_count = 0;
     dirty_from_file_row(E.cy - 1);
@@ -684,6 +756,17 @@ static void editor_cut_line(void) {
     E.quit_count = 0;
     editor_set_message("Line cut");
     dirty_from_file_row(E.cy);
+    E.dirty_status = 1;
+}
+
+static void editor_duplicate_line(void) {
+    if (E.cy >= E.num_lines) return;
+    line_t *l = &E.lines[E.cy];
+    editor_insert_line(E.cy + 1, l->text, l->len);
+    E.cy++;
+    E.modified = 1;
+    E.quit_count = 0;
+    dirty_from_file_row(E.cy - 1);
     E.dirty_status = 1;
 }
 
@@ -802,6 +885,103 @@ static void editor_find(void) {
     editor_set_message("Not found");
 }
 
+static void editor_find_replace(void) {
+    char replace_buf[MAX_SEARCH] = "";
+    int slen, rlen;
+    int replaced = 0;
+
+    editor_prompt("Search: ", E.search_buf, MAX_SEARCH);
+    if (E.search_buf[0] == '\0') {
+        editor_set_message("Replace cancelled");
+        return;
+    }
+    editor_prompt("Replace with: ", replace_buf, MAX_SEARCH);
+    /* Empty replacement is valid (delete occurrences) */
+
+    slen = strlen(E.search_buf);
+    rlen = strlen(replace_buf);
+
+    /* Search forward from current position, prompt for each */
+    {
+        int y, x, start_x;
+        for (y = E.cy; y < E.num_lines; y++) {
+            line_t *l = &E.lines[y];
+            start_x = (y == E.cy) ? E.cx : 0;
+            for (x = start_x; x <= l->len - slen; x++) {
+                if (memcmp(l->text + x, E.search_buf, slen) == 0) {
+                    char confirm[8] = "";
+                    /* Move cursor to match */
+                    E.cy = y;
+                    E.cx = x;
+                    dirty_file_row(y);
+                    editor_refresh_screen();
+
+                    editor_prompt("Replace? (y/n/a/q): ", confirm, sizeof(confirm));
+                    if (confirm[0] == 'q' || confirm[0] == '\0')
+                        goto done;
+
+                    if (confirm[0] == 'y' || confirm[0] == 'a') {
+                        /* Delete old, insert new */
+                        int tail = l->len - x - slen;
+                        line_ensure_cap(l, l->len - slen + rlen + 1);
+                        /* Re-get pointer after potential realloc */
+                        l = &E.lines[y];
+                        memmove(l->text + x + rlen, l->text + x + slen, tail + 1);
+                        memcpy(l->text + x, replace_buf, rlen);
+                        l->len += rlen - slen;
+                        E.cx = x + rlen;
+                        E.modified = 1;
+                        replaced++;
+                        dirty_file_row(y);
+                        x += rlen - 1; /* advance past replacement */
+
+                        if (confirm[0] == 'a') {
+                            /* Replace all remaining without prompting */
+                            for (x = x + 1; x <= l->len - slen; x++) {
+                                if (memcmp(l->text + x, E.search_buf, slen) == 0) {
+                                    int t2 = l->len - x - slen;
+                                    line_ensure_cap(l, l->len - slen + rlen + 1);
+                                    l = &E.lines[y];
+                                    memmove(l->text + x + rlen, l->text + x + slen, t2 + 1);
+                                    memcpy(l->text + x, replace_buf, rlen);
+                                    l->len += rlen - slen;
+                                    replaced++;
+                                    x += rlen - 1;
+                                }
+                            }
+                            dirty_file_row(y);
+                            for (y = y + 1; y < E.num_lines; y++) {
+                                l = &E.lines[y];
+                                for (x = 0; x <= l->len - slen; x++) {
+                                    if (memcmp(l->text + x, E.search_buf, slen) == 0) {
+                                        int t2 = l->len - x - slen;
+                                        line_ensure_cap(l, l->len - slen + rlen + 1);
+                                        l = &E.lines[y];
+                                        memmove(l->text + x + rlen, l->text + x + slen, t2 + 1);
+                                        memcpy(l->text + x, replace_buf, rlen);
+                                        l->len += rlen - slen;
+                                        replaced++;
+                                        x += rlen - 1;
+                                    }
+                                }
+                                dirty_file_row(y);
+                            }
+                            goto done;
+                        }
+                    }
+                }
+            }
+        }
+    }
+done:
+    E.quit_count = 0;
+    {
+        char msg[MAX_MESSAGE];
+        snprintf(msg, MAX_MESSAGE, "Replaced %d occurrence%s", replaced, replaced == 1 ? "" : "s");
+        editor_set_message(msg);
+    }
+}
+
 /* ---- Key Dispatch ---- */
 
 static void editor_process_key(int key) {
@@ -820,6 +1000,8 @@ static void editor_process_key(int key) {
     case KEY_PGDN:
     case CTRL('a'):
     case CTRL('e'):
+    case KEY_CTRL_LEFT:
+    case KEY_CTRL_RIGHT:
         editor_move_cursor(key);
         E.quit_count = 0;
         E.dirty_status = 1;  /* cursor position changed */
@@ -878,6 +1060,16 @@ static void editor_process_key(int key) {
 
     case CTRL('u'): /* paste line */
         editor_paste_line();
+        break;
+
+    case CTRL('d'): /* duplicate line */
+        editor_duplicate_line();
+        break;
+
+    case CTRL('r'): /* find & replace */
+        editor_find_replace();
+        E.dirty_status = 1;
+        E.dirty_bottom = 1;
         break;
 
     case CTRL('g'): /* go to line */
@@ -1096,6 +1288,95 @@ static int run_tests(void) {
         test_assert(l.len == 11, "line_append: len == 11");
         test_assert(strcmp(l.text, "Hello World") == 0, "line_append: text == Hello World");
         line_free(&l);
+    }
+
+    /* Test 13: auto-indent (newline preserves leading spaces) */
+    {
+        editor_reset();
+        editor_insert_line(0, "    indented text", 17);
+        E.cy = 0; E.cx = 17; /* end of line */
+        /* Simulate what editor_insert_newline does */
+        {
+            int indent = 0;
+            line_t *l = &E.lines[E.cy];
+            while (indent < l->len && l->text[indent] == ' ')
+                indent++;
+            editor_split_line(E.cy, E.cx);
+            E.cy++;
+            E.cx = 0;
+            if (indent > 0) {
+                line_t *newl = &E.lines[E.cy];
+                int old_len = newl->len;
+                line_ensure_cap(newl, old_len + indent + 1);
+                memmove(newl->text + indent, newl->text, old_len + 1);
+                memset(newl->text, ' ', indent);
+                newl->len += indent;
+                E.cx = indent;
+            }
+        }
+        test_assert(E.num_lines == 2, "auto-indent: 2 lines");
+        test_assert(E.cx == 4, "auto-indent: cx == 4");
+        test_assert(memcmp(E.lines[1].text, "    ", 4) == 0, "auto-indent: 4 leading spaces");
+    }
+
+    /* Test 14: duplicate line */
+    {
+        editor_reset();
+        editor_insert_line(0, "Hello", 5);
+        editor_insert_line(1, "World", 5);
+        E.cy = 0; E.cx = 0;
+        /* Simulate editor_duplicate_line */
+        editor_insert_line(E.cy + 1, E.lines[E.cy].text, E.lines[E.cy].len);
+        E.cy++;
+        test_assert(E.num_lines == 3, "dup_line: 3 lines");
+        test_assert(strcmp(E.lines[0].text, "Hello") == 0, "dup_line: line 0 == Hello");
+        test_assert(strcmp(E.lines[1].text, "Hello") == 0, "dup_line: line 1 == Hello (dup)");
+        test_assert(strcmp(E.lines[2].text, "World") == 0, "dup_line: line 2 == World");
+    }
+
+    /* Test 15: word movement */
+    {
+        editor_reset();
+        editor_insert_line(0, "hello world foo_bar", 19);
+        E.cy = 0; E.cx = 0;
+        /* Move word right: should skip "hello" then space -> land on "world" */
+        {
+            line_t *l = &E.lines[E.cy];
+            while (E.cx < l->len && is_word_char(l->text[E.cx])) E.cx++;
+            while (E.cx < l->len && !is_word_char(l->text[E.cx])) E.cx++;
+        }
+        test_assert(E.cx == 6, "word_right: cx == 6 (start of world)");
+        /* Move word left from position 6: skip back over space, then "hello" */
+        {
+            line_t *l = &E.lines[E.cy];
+            while (E.cx > 0 && !is_word_char(l->text[E.cx - 1])) E.cx--;
+            while (E.cx > 0 && is_word_char(l->text[E.cx - 1])) E.cx--;
+        }
+        test_assert(E.cx == 0, "word_left: cx == 0 (start of hello)");
+    }
+
+    /* Test 16: find & replace (line-level string replacement) */
+    {
+        editor_reset();
+        editor_insert_line(0, "foo bar foo baz", 15);
+        /* Manually replace first "foo" with "qux" */
+        {
+            line_t *l = &E.lines[0];
+            char *search = "foo";
+            char *replace = "qux";
+            int slen = 3, rlen = 3;
+            int x;
+            for (x = 0; x <= l->len - slen; x++) {
+                if (memcmp(l->text + x, search, slen) == 0) {
+                    memmove(l->text + x + rlen, l->text + x + slen, l->len - x - slen + 1);
+                    memcpy(l->text + x, replace, rlen);
+                    l->len += rlen - slen;
+                    x += rlen - 1;
+                }
+            }
+        }
+        test_assert(strcmp(E.lines[0].text, "qux bar qux baz") == 0,
+                    "replace: foo->qux in 'foo bar foo baz'");
     }
 
     /* Cleanup */
