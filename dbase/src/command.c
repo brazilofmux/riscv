@@ -159,9 +159,18 @@ static void indexes_insert_current(dbf_t *db) {
             char keybuf[MAX_INDEX_KEY + 1];
             if (eval_index_key(idx, keybuf) == 0) {
                 index_insert(idx, keybuf, db->current_record);
-                index_flush(idx);
             }
         }
+    }
+}
+
+static void indexes_flush_all(void) {
+    work_area_t *wa = cur_wa();
+    int i;
+    for (i = 0; i < wa->num_indexes; i++) {
+        index_t *idx = &wa->indexes[i];
+        if (idx->active)
+            index_flush(idx);
     }
 }
 
@@ -746,6 +755,7 @@ static void cmd_append_blank(dbf_t *db) {
     }
 
     indexes_insert_current(db);
+    indexes_flush_all();
 
     expr_ctx.eof_flag = 0;
     expr_ctx.bof_flag = 0;
@@ -3676,6 +3686,9 @@ static void cmd_append_from_delimited(dbf_t *db, const char *filename,
 
     if (blank_mode) {
         csv_import_blank(filename, append_row_cb, &ctx);
+        indexes_flush_all();
+        dbf_write_header_counts(db);
+        db->header_dirty = 0;
         if (set_opts.talk) printf("%d record(s) appended.\n", ctx.count);
         return;
     }
@@ -3698,6 +3711,10 @@ static void cmd_append_from_delimited(dbf_t *db, const char *filename,
         csv_parser_feed(&parser, "", 0, 1);
 
     fclose(fp);
+
+    indexes_flush_all();
+    dbf_write_header_counts(db);
+    db->header_dirty = 0;
 
     if (parser.error == 1)
         printf("CSV parse error at line %d.\n", parser.line_number);
@@ -3940,6 +3957,7 @@ static void cmd_append_from(dbf_t *db, const char *arg) {
         count++;
     }
 
+    indexes_flush_all();
     dbf_close(&source);
     if (set_opts.talk) printf("%d record(s) appended.\n", count);
 }
@@ -6151,7 +6169,7 @@ void cmd_follow_relations(void)         { follow_relations(); }
 int cmd_field_display_width(dbf_t *db, int f) { return field_display_width(db, f); }
 void cmd_indexes_capture_keys(dbf_t *db, char keys[][MAX_INDEX_KEY+1])  { indexes_capture_keys(db, keys); }
 int cmd_indexes_update_current(dbf_t *db, char keys[][MAX_INDEX_KEY+1]) { return indexes_update_current(db, keys); }
-void cmd_indexes_insert_current(dbf_t *db) { indexes_insert_current(db); }
+void cmd_indexes_insert_current(dbf_t *db) { indexes_insert_current(db); indexes_flush_all(); }
 void cmd_ctx_setup(void)                { ctx_setup(); }
 int cmd_get_deleted(void)               { return set_opts.deleted; }
 

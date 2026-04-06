@@ -10,7 +10,7 @@
 #define FLAG_WRITE    0x02
 #define FLAG_APPEND   0x04
 
-#define STDIO_BUF_SIZE 4096
+#define STDIO_BUF_SIZE 8192
 
 /* Syscall wrappers (defined in syscall.s) */
 extern int _write(int fd, const void *buf, int len);
@@ -20,9 +20,9 @@ extern int _close(int fd);
 extern int _lseek(int fd, int offset, int whence);
 extern int _ftruncate(int fd, int length);
 
-static FILE _stdin  = { .fd = 0, .flags = FLAG_READ, .mode = _IONBF, .ungetc_char = -1 };
-static FILE _stdout = { .fd = 1, .flags = FLAG_WRITE, .mode = _IOLBF, .ungetc_char = -1 };
-static FILE _stderr = { .fd = 2, .flags = FLAG_WRITE, .mode = _IONBF, .ungetc_char = -1 };
+static FILE _stdin  = { .fd = 0, .flags = FLAG_READ, .mode = _IONBF, .ungetc_char = -1, .file_pos = -1 };
+static FILE _stdout = { .fd = 1, .flags = FLAG_WRITE, .mode = _IOLBF, .ungetc_char = -1, .file_pos = -1 };
+static FILE _stderr = { .fd = 2, .flags = FLAG_WRITE, .mode = _IONBF, .ungetc_char = -1, .file_pos = -1 };
 
 FILE *stdin = &_stdin;
 FILE *stdout = &_stdout;
@@ -45,6 +45,8 @@ static int internal_flush(FILE *stream) {
             }
             total += written;
         }
+        if (stream->file_pos >= 0)
+            stream->file_pos += (long)len;
         stream->buf_pos = 0;
     }
     return 0;
@@ -112,6 +114,7 @@ FILE *fopen(const char *pathname, const char *mode) {
     f->buffer = malloc(STDIO_BUF_SIZE);
     f->buf_size = f->buffer ? STDIO_BUF_SIZE : 0;
     if (!f->buffer) f->mode = _IONBF;
+    f->file_pos = (oflags & O_APPEND) ? -1 : 0;
 
     return f;
 }
@@ -151,6 +154,8 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
             }
             bytes_written += written;
         }
+        if (stream->file_pos >= 0)
+            stream->file_pos += (long)bytes_written;
         return bytes_written / size;
     }
 
@@ -193,6 +198,8 @@ static size_t fread_fill_buffer(FILE *stream) {
         return 0;
     }
 
+    if (stream->file_pos >= 0)
+        stream->file_pos += bytes_read;
     stream->buf_pos = 0;
     stream->buf_len = bytes_read;
 
@@ -242,6 +249,8 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
                 else stream->error = 1;
                 break;
             }
+            if (stream->file_pos >= 0)
+                stream->file_pos += nread;
             dest += nread;
             remaining -= nread;
             bytes_copied += nread;
@@ -317,14 +326,35 @@ int fseek(FILE *stream, long offset, int whence) {
     if (!stream) return -1;
 
     fflush(stream);
-    stream->buf_pos = 0;
-    stream->buf_len = 0;
+
+    /* Check if we can skip the kernel lseek for SEEK_SET */
+    if (whence == SEEK_SET && stream->buf_len == 0 && stream->file_pos >= 0) {
+        /* No read data buffered; after flush, file_pos is current kernel pos */
+        if (stream->file_pos == offset) {
+            stream->eof = 0;
+            return 0;
+        }
+    }
+
+    /* Discard read buffer */
+    if (stream->buf_len > 0) {
+        /* We had buffered read data — kernel pos is ahead of logical pos.
+         * After lseek, file_pos will be set from offset. */
+        stream->buf_pos = 0;
+        stream->buf_len = 0;
+    }
 
     int result = _lseek(stream->fd, offset, whence);
     if (result < 0) {
         stream->error = 1;
+        stream->file_pos = -1;
         return -1;
     }
+
+    if (whence == SEEK_SET)
+        stream->file_pos = offset;
+    else
+        stream->file_pos = -1;  /* SEEK_CUR/SEEK_END: unknown */
 
     stream->eof = 0;
     return 0;
@@ -332,6 +362,16 @@ int fseek(FILE *stream, long offset, int whence) {
 
 long ftell(FILE *stream) {
     if (!stream) return -1L;
+
+    /* Use tracked position if available */
+    if (stream->file_pos >= 0) {
+        long pos = stream->file_pos;
+        if (stream->buf_len == 0 && stream->buf_pos > 0)
+            pos += (long)stream->buf_pos;  /* write mode: pending writes */
+        else if (stream->buf_len > 0)
+            pos -= (long)(stream->buf_len - stream->buf_pos);  /* read mode */
+        return pos;
+    }
 
     int pos = _lseek(stream->fd, 0, SEEK_CUR);
     if (pos < 0) {

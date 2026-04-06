@@ -8,13 +8,14 @@
 #include "util.h"
 #include "util.h"
 
-#define DBF_CACHE_RECORDS 32
+#define DBF_CACHE_RECORDS 256
 
 void dbf_init(dbf_t *db) {
     memset(db, 0, sizeof(*db));
     db->memo_fp = NULL;
     db->next_memo_block = 0;
     db->has_memo = 0;
+    db->file_pos = -1;
 }
 
 void dbf_cache_invalidate(dbf_t *db) {
@@ -187,6 +188,7 @@ int dbf_open(dbf_t *db, const char *filename) {
 
     db->current_record = 0;
     db->record_dirty = 0;
+    db->file_pos = -1;
     dbf_cache_init(db);
 
     /* Check for memo fields */
@@ -207,7 +209,10 @@ void dbf_close(dbf_t *db) {
     if (!db->fp) return;
     if (db->record_dirty)
         dbf_flush_record(db);
-    dbf_write_header_counts(db);
+    if (db->header_dirty) {
+        dbf_write_header_counts(db);
+        db->header_dirty = 0;
+    }
     dbf_memo_close(db);
     fclose(db->fp);
     db->fp = NULL;
@@ -222,8 +227,6 @@ int dbf_is_open(const dbf_t *db) {
 }
 
 int dbf_append_blank(dbf_t *db) {
-    long pos;
-
     if (!db->fp) return -1;
 
     /* Flush current record if dirty */
@@ -237,17 +240,10 @@ int dbf_append_blank(dbf_t *db) {
     memset(db->record_buf, ' ', db->record_size);
     db->record_buf[db->record_size] = '\0';
 
-    /* Seek to record position and write */
-    pos = db->header_size + (long)(db->current_record - 1) * db->record_size;
-    fseek(db->fp, pos, 0); /* SEEK_SET = 0 */
-    fwrite(db->record_buf, 1, db->record_size, db->fp);
-    fflush(db->fp);
-
-    /* Update header */
-    dbf_write_header_counts(db);
-
-    db->record_dirty = 0;
-    area_invalidate_all(db->filename);
+    /* Mark dirty — will be written by dbf_flush_record */
+    db->header_dirty = 1;
+    db->record_dirty = 1;
+    dbf_cache_invalidate(db);
     return 0;
 }
 
@@ -279,9 +275,11 @@ int dbf_read_record(dbf_t *db, uint32_t recno) {
         bytes = (size_t)db->record_size * (size_t)to_read;
 
         pos = db->header_size + (long)(start - 1) * db->record_size;
-        fseek(db->fp, pos, 0);
+        if (db->file_pos != pos)
+            fseek(db->fp, pos, 0);
         if (fread(db->cache_buf, 1, bytes, db->fp) != bytes)
             return -1;
+        db->file_pos = pos + (long)bytes;
         db->cache_start = start;
         db->cache_count = to_read;
 
@@ -289,9 +287,11 @@ int dbf_read_record(dbf_t *db, uint32_t recno) {
         db->record_buf[db->record_size] = '\0';
     } else {
         pos = db->header_size + (long)(recno - 1) * db->record_size;
-        fseek(db->fp, pos, 0);
+        if (db->file_pos != pos)
+            fseek(db->fp, pos, 0);
         if (fread(db->record_buf, 1, db->record_size, db->fp) != db->record_size)
             return -1;
+        db->file_pos = pos + db->record_size;
         db->record_buf[db->record_size] = '\0';
     }
 
@@ -307,11 +307,12 @@ int dbf_flush_record(dbf_t *db) {
         return 0;
 
     pos = db->header_size + (long)(db->current_record - 1) * db->record_size;
-    fseek(db->fp, pos, 0);
+    if (db->file_pos != pos) {
+        fseek(db->fp, pos, 0);
+    }
     fwrite(db->record_buf, 1, db->record_size, db->fp);
-    fflush(db->fp);
+    db->file_pos = pos + db->record_size;
     db->record_dirty = 0;
-    area_invalidate_all(db->filename);
     return 0;
 }
 
@@ -355,7 +356,14 @@ int dbf_set_field_raw(dbf_t *db, int idx, const char *value) {
         memset(db->record_buf + 1 + db->fields[idx].offset + vlen, ' ', len - vlen);
 
     db->record_dirty = 1;
-    dbf_cache_invalidate(db);
+    /* Update cache in place if this record is cached */
+    if (db->cache_buf && db->cache_count > 0 &&
+        db->current_record >= db->cache_start &&
+        db->current_record < db->cache_start + (uint32_t)db->cache_count) {
+        int ci = (int)(db->current_record - db->cache_start);
+        memcpy(db->cache_buf + ci * db->record_size + 1 + db->fields[idx].offset,
+               db->record_buf + 1 + db->fields[idx].offset, len);
+    }
     return 0;
 }
 
@@ -367,7 +375,7 @@ int dbf_write_header_counts(dbf_t *db) {
     fseek(db->fp, 4, 0);
     write_le32(buf, db->record_count);
     fwrite(buf, 1, 4, db->fp);
-    fflush(db->fp);
+    db->file_pos = -1;
     return 0;
 }
 

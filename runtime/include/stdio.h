@@ -27,6 +27,7 @@ typedef struct FILE {
     size_t buf_pos;
     size_t buf_len;     /* for read: bytes available in buffer */
     int ungetc_char;    /* -1 = empty */
+    long file_pos;      /* tracked kernel file position, -1 = unknown */
 } FILE;
 
 extern FILE *stdin;

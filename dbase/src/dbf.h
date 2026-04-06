@@ -27,6 +27,8 @@ typedef struct {
     uint32_t current_record;         /* 1-based; 0 = no current record */
     char record_buf[DBF_MAX_RECORD_SIZE];
     int record_dirty;
+    int header_dirty;                /* record_count changed, needs write */
+    long file_pos;                   /* tracked file position, -1 = unknown */
 
     /* Record cache (read-ahead window) */
     char *cache_buf;                 /* raw records buffer */
