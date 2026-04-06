@@ -37,7 +37,7 @@ _Static_assert(sizeof(block_entry_t) == 16, "block_entry_t must be 16 bytes");
 #define BLOCK_CACHE_SIZE  (64 * 1024)  /* must be power of 2 */
 #define BLOCK_CACHE_MASK  (BLOCK_CACHE_SIZE - 1)
 
-#define CODE_BUF_SIZE     (64 * 1024 * 1024)  /* 64 MB JIT code buffer */
+#define CODE_BUF_SIZE     (256 * 1024 * 1024)  /* 256 MB JIT code buffer */
 
 /* DBT state */
 typedef struct {
