@@ -1982,6 +1982,7 @@ static int replace_cb(dbf_t *db, uint32_t recno, void *userdata) {
             if (memo_snap.valid)
                 dbf_memo_restore(db, &memo_snap);
             db->record_dirty = 0;
+            dbf_cache_invalidate(db);  /* cache has new values; force re-read from disk */
             dbf_read_record(db, db->current_record);
             return REC_CONTINUE;  /* skip, not fatal */
         }

@@ -240,10 +240,15 @@ int dbf_append_blank(dbf_t *db) {
     memset(db->record_buf, ' ', db->record_size);
     db->record_buf[db->record_size] = '\0';
 
-    /* Mark dirty — will be written by dbf_flush_record */
-    db->header_dirty = 1;
+    /* Write blank record to disk immediately — deferred write breaks the
+       unique-index rollback path which re-reads from disk */
     db->record_dirty = 1;
-    dbf_cache_invalidate(db);
+    dbf_flush_record(db);
+
+    /* Update header counts */
+    dbf_write_header_counts(db);
+    db->header_dirty = 0;
+
     return 0;
 }
 
@@ -275,8 +280,7 @@ int dbf_read_record(dbf_t *db, uint32_t recno) {
         bytes = (size_t)db->record_size * (size_t)to_read;
 
         pos = db->header_size + (long)(start - 1) * db->record_size;
-        if (db->file_pos != pos)
-            fseek(db->fp, pos, 0);
+        fseek(db->fp, pos, 0);
         if (fread(db->cache_buf, 1, bytes, db->fp) != bytes)
             return -1;
         db->file_pos = pos + (long)bytes;
@@ -287,8 +291,7 @@ int dbf_read_record(dbf_t *db, uint32_t recno) {
         db->record_buf[db->record_size] = '\0';
     } else {
         pos = db->header_size + (long)(recno - 1) * db->record_size;
-        if (db->file_pos != pos)
-            fseek(db->fp, pos, 0);
+        fseek(db->fp, pos, 0);
         if (fread(db->record_buf, 1, db->record_size, db->fp) != db->record_size)
             return -1;
         db->file_pos = pos + db->record_size;
@@ -307,12 +310,24 @@ int dbf_flush_record(dbf_t *db) {
         return 0;
 
     pos = db->header_size + (long)(db->current_record - 1) * db->record_size;
-    if (db->file_pos != pos) {
-        fseek(db->fp, pos, 0);
-    }
+    fseek(db->fp, pos, 0);
     fwrite(db->record_buf, 1, db->record_size, db->fp);
+    fflush(db->fp);
     db->file_pos = pos + db->record_size;
     db->record_dirty = 0;
+
+    /* Sync our own cache so subsequent reads don't restore stale data */
+    if (db->cache_buf && db->cache_count > 0 &&
+        db->current_record >= db->cache_start &&
+        db->current_record < db->cache_start + (uint32_t)db->cache_count) {
+        int ci = (int)(db->current_record - db->cache_start);
+        memcpy(db->cache_buf + ci * db->record_size,
+               db->record_buf, db->record_size);
+    }
+
+    /* Invalidate other work areas that have the same file open */
+    area_invalidate_all(db->filename);
+
     return 0;
 }
 
