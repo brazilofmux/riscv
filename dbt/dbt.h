@@ -9,9 +9,15 @@
 #define RAS_MASK  (RAS_SIZE - 1)
 
 /* Guest CPU context — laid out for fast access from JIT code.
- * RBX points to this struct during execution.
- * x[0..31] at offset 0..124, next_pc at offset 128.
- * ras[0..31] at offset 132..259, ras_top at offset 260.
+ *   x86-64 backend: RBX points to this struct during execution.
+ *   AArch64 backend: X19 points to this struct during execution.
+ * Field offsets (used by hand-emitted addressing in both backends):
+ *   x[0..31]   at offset   0..127
+ *   next_pc    at offset 128
+ *   ras[0..31] at offset 132..259
+ *   ras_top    at offset 260
+ *   f[0..31]   at offset 264 (after natural 8-byte alignment)
+ *   fcsr       at offset 520
  */
 typedef struct {
     uint32_t x[32];          /* guest registers (x[0] always 0) */
@@ -23,8 +29,9 @@ typedef struct {
 } rv32_ctx_t;
 
 /* Block cache entry — exactly 16 bytes for inline JIT lookup.
- * R13 points to cache[0] during execution.
- * Lookup: index = (pc >> 2) & MASK; entry = R13 + index * 16
+ *   x86-64 backend: R13 points to cache[0] during execution.
+ *   AArch64 backend: X21 points to cache[0] during execution.
+ * Lookup: index = (pc >> 2) & MASK; entry = base + index * 16
  */
 typedef struct {
     uint32_t guest_pc;    /* guest start address (0 = empty) */
@@ -74,5 +81,33 @@ typedef struct {
 int dbt_init(dbt_state_t *dbt, rv32_binary_t *bin);
 int dbt_run(dbt_state_t *dbt);
 void dbt_cleanup(dbt_state_t *dbt);
+
+/* ---- Arch-specific hooks (provided by dbt_x64.c or dbt_a64.c) ----
+ *
+ * dbt_translate_block: translate the guest block starting at guest_pc and
+ *   return a pointer into dbt->code_buf to the entry point.
+ *
+ * dbt_emit_trampoline: write the host-arch entry/exit shim at the start of
+ *   dbt->code_buf, advancing dbt->code_used. The shim is invoked by dbt_run
+ *   as a C function pointer with signature
+ *     void(*)(rv32_ctx_t *ctx, uint8_t *mem, void *block, void *cache);
+ *   and is responsible for loading the host-arch register convention (ctx
+ *   pointer, mem base, cache base) and then calling `block`.
+ *
+ * dbt_jit_available: 1 if the linked backend can actually translate; 0 if
+ *   the host has no JIT yet (e.g. stub a64 backend before P1 is finished).
+ *   main.c uses this to fall back to the interpreter automatically.
+ */
+uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc);
+void     dbt_emit_trampoline(dbt_state_t *dbt);
+int      dbt_jit_available(void);
+
+/* Diamond-merge eligibility check (defined in dbt_common.c). Returns 1 if
+ * every guest instruction in [start, target) is a side-effect-free
+ * straight-line op. */
+int      dbt_can_diamond_merge(dbt_state_t *dbt, uint32_t start, uint32_t target);
+
+/* Symbol-table lookup, used by dbt_init for intrinsic interception. */
+uint32_t dbt_find_symbol(rv32_binary_t *bin, const char *name);
 
 #endif /* DBT_H */
