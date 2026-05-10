@@ -167,6 +167,40 @@ static void rc_flush(emit_t *e, reg_cache_t *rc) {
                              (uint32_t)(rc->slots[i].guest_reg * 4));
 }
 
+/* Same as rc_flush but uses an arbitrary slot snapshot — needed by the
+ * superblock cold stubs, which store the cache state at each side-exit
+ * branch point and replay the writeback when the branch is taken. */
+static void rc_flush_snapshot(emit_t *e, const rc_slot_t *snapshot) {
+    for (int i = 0; i < RC_NUM_SLOTS; i++)
+        if (snapshot[i].guest_reg >= 0 && snapshot[i].dirty)
+            emit_str_w32_imm(e, rc_host_regs[i], A_CTX,
+                             (uint32_t)(snapshot[i].guest_reg * 4));
+}
+
+/* ---- Superblock side exits ----
+ *
+ * When we hit a forward conditional branch and have buffer/budget left,
+ * we treat the TAKEN side as a "side exit" — emit the b.cond unpatched,
+ * snapshot the current cache state, and keep translating the fall-through
+ * path inside the same block. At end-of-block we emit a cold stub for
+ * each side exit: patch the b.cond to land here, replay the snapshot's
+ * dirty writebacks, then chained_exit_known to the original target.
+ *
+ * The snapshot is necessary because the fall-through path may evict slots
+ * or write new guest regs to host regs. At runtime, when the side exit
+ * fires, control jumps STRAIGHT from the b.cond to the cold stub —
+ * skipping all of the fall-through code — so the host regs still hold
+ * exactly the values the snapshot recorded. The stub uses the snapshot
+ * to know which dirty values need to land in ctx before exiting. */
+
+typedef struct {
+    uint32_t bcond_patch;            /* offset of the b.cond to patch */
+    uint32_t target_pc;              /* guest PC for the side exit */
+    rc_slot_t snapshot[RC_NUM_SLOTS];/* cache state at the branch point */
+} side_exit_t;
+
+#define MAX_SIDE_EXITS 8
+
 /* ---- Small helpers ---- */
 
 /* dst = rn + imm  (32-bit). Picks ADD/SUB-imm12 if the magnitude fits,
@@ -1010,6 +1044,16 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
     reg_cache_t rc;
     rc_init(&rc);
 
+    side_exit_t side_exits[MAX_SIDE_EXITS];
+    int num_side_exits = 0;
+
+    /* Branch state set up by OP_BRANCH and the SLT+branch fusion before
+     * jumping to emit_branch. cmp/cset have already been emitted; flags
+     * are live; the cache reflects the post-cmp state. */
+    a64_cond_t branch_cond = A64_COND_AL;
+    uint32_t   branch_fall_pc  = 0;
+    uint32_t   branch_taken_pc = 0;
+
     uint32_t pc = guest_pc;
     int insns = 0;
 
@@ -1079,8 +1123,6 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 int is_signed = (insn.opcode == OP_REG)
                     ? (insn.funct3 == ALU_SLT)
                     : (insn.funct3 == ALU_SLTI);
-                uint32_t branch_pc = pc + 4;
-                int32_t branch_imm = ni.imm;
 
                 /* Emit the SLT comparison directly (sets NZCV). */
                 if (insn.opcode == OP_REG) {
@@ -1093,29 +1135,20 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                     else           cmp_w_imm32_unsigned(&e, rs1, insn.imm);
                 }
 
-                /* Materialize the SLT result if anything later in the
-                 * basic block might consume it. We don't do liveness
-                 * analysis, so always emit the cset (one instruction;
-                 * cset doesn't touch NZCV so flags survive into b.cond). */
+                /* Materialize the SLT result; cset doesn't touch NZCV. */
                 a64_reg_t rd = rc_write(&e, &rc, insn.rd);
                 emit_cset_w32(&e, rd, is_signed ? A64_COND_LT : A64_COND_LO);
 
-                a64_cond_t cond;
                 if (ni.funct3 == BR_BNE)
-                    cond = is_signed ? A64_COND_LT : A64_COND_LO;
+                    branch_cond = is_signed ? A64_COND_LT : A64_COND_LO;
                 else /* BR_BEQ */
-                    cond = is_signed ? A64_COND_GE : A64_COND_HS;
+                    branch_cond = is_signed ? A64_COND_GE : A64_COND_HS;
 
-                /* Standard branch tail (mirrors the OP_BRANCH case below).
-                 * rc_flush emits STRs only — NZCV survives. */
-                rc_flush(&e, &rc);
-                uint32_t bcond_off = emit_pos(&e);
-                emit_b_cond(&e, cond, 0);
-                chained_exit_known(&e, branch_pc + 4);
-                uint32_t taken_off = emit_pos(&e);
-                emit_patch_cond19(&e, bcond_off, taken_off);
-                chained_exit_known(&e, (uint32_t)(branch_pc + branch_imm));
-                goto done;
+                branch_fall_pc  = pc + 8;
+                branch_taken_pc = (uint32_t)((pc + 4) + ni.imm);
+                pc = branch_fall_pc;
+                insns += 1;  /* +1 here, for-loop's post-step adds the other */
+                goto emit_branch;
             }
         }
 
@@ -1152,29 +1185,26 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
         case OP_BRANCH: {
             a64_reg_t rs1 = rc_read(&e, &rc, insn.rs1);
             a64_reg_t rs2 = rc_read(&e, &rc, insn.rs2);
-            /* Flush BEFORE the cmp so both exit paths see ctx in sync.
-             * STR doesn't modify NZCV, so flushing after the cmp would
-             * also be safe — but doing it first keeps the cmp/b.cond
-             * pair adjacent and lets us share the flush across exits. */
-            rc_flush(&e, &rc);
+            /* No flush yet: emit_branch may want to keep cache state for
+             * the superblock fall-through. The fallback path flushes
+             * before its own b.cond/chained-exit pair. */
             emit_cmp_w32_w32(&e, rs1, rs2);
-            a64_cond_t cond;
             switch (insn.funct3) {
-            case BR_BEQ:  cond = A64_COND_EQ; break;
-            case BR_BNE:  cond = A64_COND_NE; break;
-            case BR_BLT:  cond = A64_COND_LT; break;
-            case BR_BGE:  cond = A64_COND_GE; break;
-            case BR_BLTU: cond = A64_COND_LO; break;
-            case BR_BGEU: cond = A64_COND_HS; break;
-            default: cond = A64_COND_AL;
+            case BR_BEQ:  branch_cond = A64_COND_EQ; break;
+            case BR_BNE:  branch_cond = A64_COND_NE; break;
+            case BR_BLT:  branch_cond = A64_COND_LT; break;
+            case BR_BGE:  branch_cond = A64_COND_GE; break;
+            case BR_BLTU: branch_cond = A64_COND_LO; break;
+            case BR_BGEU: branch_cond = A64_COND_HS; break;
+            default:
+                rc_flush(&e, &rc);
+                exit_with_pc(&e, pc | 2u);
+                goto done;
             }
-            uint32_t bcond_off = emit_pos(&e);
-            emit_b_cond(&e, cond, 0);
-            chained_exit_known(&e, pc + 4);
-            uint32_t taken_off = emit_pos(&e);
-            emit_patch_cond19(&e, bcond_off, taken_off);
-            chained_exit_known(&e, (uint32_t)(pc + insn.imm));
-            goto done;
+            branch_fall_pc  = pc + 4;
+            branch_taken_pc = (uint32_t)(pc + insn.imm);
+            pc = branch_fall_pc;
+            goto emit_branch;
         }
 
         case OP_SYSTEM: {
@@ -1215,15 +1245,62 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             continue;
         }
         }
+        continue;
+
+        /* ---- Shared branch tail ----
+         * Reached via `goto emit_branch` from OP_BRANCH or the SLT+branch
+         * fusion. Caller has emitted the cmp (NZCV is live) and set:
+         *   branch_cond, branch_fall_pc, branch_taken_pc, pc=branch_fall_pc.
+         *
+         * Strategy: if there's a side-exit slot left and budget for at
+         * least a few more guest insns, register the taken side as a side
+         * exit and continue translating fall-through. Otherwise emit the
+         * regular two-exit branch ending the block. */
+    emit_branch:
+        if (num_side_exits < MAX_SIDE_EXITS && insns < MAX_BLOCK_INSNS - 4) {
+            uint32_t bp = emit_pos(&e);
+            emit_b_cond(&e, branch_cond, 0);
+            side_exits[num_side_exits].bcond_patch = bp;
+            side_exits[num_side_exits].target_pc   = branch_taken_pc;
+            memcpy(side_exits[num_side_exits].snapshot,
+                   rc.slots, sizeof(rc.slots));
+            num_side_exits++;
+            continue;
+        }
+        /* Fallback: end the block with a normal two-target branch. */
+        rc_flush(&e, &rc);
+        {
+            uint32_t bcond_off = emit_pos(&e);
+            emit_b_cond(&e, branch_cond, 0);
+            chained_exit_known(&e, branch_fall_pc);
+            uint32_t taken_off = emit_pos(&e);
+            emit_patch_cond19(&e, bcond_off, taken_off);
+            chained_exit_known(&e, branch_taken_pc);
+        }
+        goto done;
     }
 
-    /* Hit MAX_BLOCK_INSNS without seeing a control-flow instruction.
-     * Chain straight to the next pc — long straight-line code is common
-     * in compiler-generated initialisers. */
+    /* Hit MAX_BLOCK_INSNS without a control-flow instruction. Chain
+     * straight to the next pc — long straight-line code is common in
+     * compiler-generated initialisers. */
     rc_flush(&e, &rc);
     chained_exit_known(&e, pc);
 
 done:
+    /* Cold stubs for any unfilled side exits. Each stub patches its
+     * b.cond to land here, replays the per-side-exit snapshot's dirty
+     * writebacks (only the dirty slots matter — clean cached values are
+     * already coherent in ctx), then chains to the side-exit target. */
+    for (int i = 0; i < num_side_exits; i++) {
+        emit_patch_cond19(&e, side_exits[i].bcond_patch, emit_pos(&e));
+        rc_flush_snapshot(&e, side_exits[i].snapshot);
+        chained_exit_known(&e, side_exits[i].target_pc);
+    }
+    if (num_side_exits > 0) {
+        dbt->superblock_count++;
+        dbt->side_exits_total += (uint64_t)num_side_exits;
+    }
+
     dbt->code_used += e.offset;
     dbt->blocks_translated++;
     /* AArch64 has split I/D caches: any code we just wrote into the
