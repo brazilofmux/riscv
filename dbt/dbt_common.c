@@ -24,6 +24,21 @@
 #include <poll.h>
 #include <sys/stat.h>
 #include <math.h>
+#include <dirent.h>
+#include <errno.h>
+
+/* Host-side directory handle table for the opendir/readdir/closedir
+ * ECALLs. Slot index is what the guest sees as a "DIR handle"; the real
+ * host DIR* lives here. Single-threaded guests, so no locking. */
+#define DBT_DIR_TABLE_SIZE 16
+static DIR *g_dir_table[DBT_DIR_TABLE_SIZE];
+
+static int dbt_dir_alloc(DIR *d) {
+    for (int i = 0; i < DBT_DIR_TABLE_SIZE; i++) {
+        if (!g_dir_table[i]) { g_dir_table[i] = d; return i; }
+    }
+    return -1;
+}
 
 /* libm intrinsic table — see libm_id_t in dbt.h. The order MUST match the
  * enum so the per-arch dispatcher can index by id. */
@@ -211,6 +226,100 @@ static int handle_ecall(dbt_state_t *dbt) {
 
     case 80:  /* fstat — stub, return -1 */
         ctx->x[10] = (uint32_t)-1;
+        break;
+
+    case 90:  /* opendir(path) → handle (>=0) or -1 */
+        {
+            uint32_t path_addr = ctx->x[10];
+            if (path_addr >= dbt->bin->memory_size) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            const char *pathname = (const char *)(dbt->bin->memory + path_addr);
+            DIR *d = opendir(pathname);
+            if (!d) { ctx->x[10] = (uint32_t)-1; break; }
+            int slot = dbt_dir_alloc(d);
+            if (slot < 0) {
+                closedir(d);
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            ctx->x[10] = (uint32_t)slot;
+        }
+        break;
+
+    case 91:  /* readdir(handle, guest_dirent_addr) → 0 success / -1 EOF/err.
+               * Guest struct dirent: 8-byte d_ino at +0, 1-byte d_type
+               * at +8, 256-byte d_name at +9. Total written = 265 bytes;
+               * sizeof on the guest is 272 (8-aligned tail padding). */
+        {
+            int slot = (int)(int32_t)ctx->x[10];
+            uint32_t buf_addr = ctx->x[11];
+            if (slot < 0 || slot >= DBT_DIR_TABLE_SIZE || !g_dir_table[slot]
+                || buf_addr + 272 > dbt->bin->memory_size) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            errno = 0;
+            struct dirent *e = readdir(g_dir_table[slot]);
+            if (!e) {
+                ctx->x[10] = (errno == 0) ? (uint32_t)-1 : (uint32_t)-1;
+                break;
+            }
+            uint8_t *dst = dbt->bin->memory + buf_addr;
+            memset(dst, 0, 265);
+            uint64_t ino = (uint64_t)e->d_ino;
+            memcpy(dst + 0, &ino, 8);
+            uint8_t type = 0;
+#ifdef DT_REG
+            type = e->d_type;  /* POSIX d_type when available */
+#endif
+            dst[8] = type;
+            size_t nlen = strlen(e->d_name);
+            if (nlen > 255) nlen = 255;
+            memcpy(dst + 9, e->d_name, nlen);
+            dst[9 + nlen] = '\0';
+            ctx->x[10] = 0;
+        }
+        break;
+
+    case 92:  /* closedir(handle) */
+        {
+            int slot = (int)(int32_t)ctx->x[10];
+            if (slot < 0 || slot >= DBT_DIR_TABLE_SIZE || !g_dir_table[slot]) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            int rc = closedir(g_dir_table[slot]);
+            g_dir_table[slot] = NULL;
+            ctx->x[10] = (uint32_t)(int32_t)rc;
+        }
+        break;
+
+    case 101: /* nanosleep(req_ts_addr, rem_ts_addr).
+               * Guest struct timespec: 4-byte tv_sec, 4-byte tv_nsec
+               * (long is 32-bit on ILP32). */
+        {
+            uint32_t req_addr = ctx->x[10];
+            uint32_t rem_addr = ctx->x[11];
+            if (req_addr + 8 > dbt->bin->memory_size) {
+                ctx->x[10] = (uint32_t)-1;
+                break;
+            }
+            uint32_t s32 = 0, ns32 = 0;
+            memcpy(&s32,  dbt->bin->memory + req_addr,     4);
+            memcpy(&ns32, dbt->bin->memory + req_addr + 4, 4);
+            struct timespec req = { (time_t)s32, (long)ns32 };
+            struct timespec rem = { 0, 0 };
+            int rc = nanosleep(&req, &rem);
+            if (rem_addr && rem_addr + 8 <= dbt->bin->memory_size) {
+                uint32_t rs = (uint32_t)rem.tv_sec;
+                uint32_t rn = (uint32_t)rem.tv_nsec;
+                memcpy(dbt->bin->memory + rem_addr,     &rs, 4);
+                memcpy(dbt->bin->memory + rem_addr + 4, &rn, 4);
+            }
+            ctx->x[10] = (uint32_t)(int32_t)rc;
+        }
         break;
 
     case 214: /* brk — not needed, return 0 */

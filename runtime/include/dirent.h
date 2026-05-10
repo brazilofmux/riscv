@@ -14,13 +14,20 @@
 #define DT_LNK     10
 #define DT_SOCK    12
 
+/* Layout matches what the host writes via ECALL 91:
+ *   +0  uint64_t d_ino
+ *   +8  unsigned char d_type
+ *   +9  char d_name[256]
+ * Sizeof rounds up to 272 on the guest (8-aligned). */
 struct dirent {
-    uint64_t      d_ino;        /* inode number */
-    unsigned char d_type;       /* DT_REG, DT_DIR, etc. */
-    char          d_name[256];  /* NUL-terminated filename */
+    uint64_t      d_ino;
+    unsigned char d_type;
+    char          d_name[256];
 };
 
-typedef struct DIR DIR;
+typedef struct DIR {
+    int handle;
+} DIR;
 
 DIR           *opendir(const char *name);
 struct dirent *readdir(DIR *dirp);

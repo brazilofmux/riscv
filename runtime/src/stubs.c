@@ -1,9 +1,12 @@
-/* Stubs for POSIX surface we declare but cannot implement under the
- * microcontroller profile (no kernel-side filesystem walking, no real
- * signal delivery, no mmap). The headers expose the API so guest code
- * compiles; calls land here and fail in a defined way. */
+/* Stubs and host-mediated impls for POSIX surface beyond the core
+ * stdio/string/etc. set. opendir/readdir/closedir use ECALLs 90-92
+ * to keep a host DIR* table; the rest stay stubbed because either
+ * the syscall doesn't exist or the microcontroller profile rejects
+ * it on purpose (mmap, real signals). */
 
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <signal.h>
@@ -24,11 +27,38 @@ int rmdir(const char *path) { (void)path; return -1; }
 int access(const char *pathname, int mode) { (void)pathname; (void)mode; return -1; }
 int isatty(int fd) { return (fd >= 0 && fd <= 2) ? 1 : 0; }
 
-DIR           *opendir(const char *name)  { (void)name; return NULL; }
-struct dirent *readdir(DIR *dirp)         { (void)dirp; return NULL; }
-int            closedir(DIR *dirp)        { (void)dirp; return -1; }
-int            dirfd(DIR *dirp)           { (void)dirp; return -1; }
-void           rewinddir(DIR *dirp)       { (void)dirp; }
+extern int _opendir(const char *path);
+extern int _readdir(int handle, struct dirent *buf);
+extern int _closedir(int handle);
+
+/* readdir is non-reentrant — single static buffer per the POSIX spec. */
+static struct dirent _readdir_buf;
+
+DIR *opendir(const char *name) {
+    if (!name) return NULL;
+    int h = _opendir(name);
+    if (h < 0) return NULL;
+    DIR *d = (DIR *)malloc(sizeof(DIR));
+    if (!d) { _closedir(h); return NULL; }
+    d->handle = h;
+    return d;
+}
+
+struct dirent *readdir(DIR *dirp) {
+    if (!dirp) return NULL;
+    if (_readdir(dirp->handle, &_readdir_buf) != 0) return NULL;
+    return &_readdir_buf;
+}
+
+int closedir(DIR *dirp) {
+    if (!dirp) return -1;
+    int rc = _closedir(dirp->handle);
+    free(dirp);
+    return rc;
+}
+
+int  dirfd(DIR *dirp)     { return dirp ? dirp->handle : -1; }
+void rewinddir(DIR *dirp) { (void)dirp; /* not supported by the ECALL */ }
 
 /* ---- sleep ---- */
 

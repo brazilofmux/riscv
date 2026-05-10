@@ -74,3 +74,35 @@ _ftruncate:
     ecall
     ret
     .size _ftruncate, . - _ftruncate
+
+    .global _opendir
+    .type _opendir, @function
+_opendir:
+    li      a7, 90           # opendir(path=a0) → handle / -1
+    ecall
+    ret
+    .size _opendir, . - _opendir
+
+    .global _readdir
+    .type _readdir, @function
+_readdir:
+    li      a7, 91           # readdir(handle=a0, dirent_buf=a1) → 0 / -1
+    ecall
+    ret
+    .size _readdir, . - _readdir
+
+    .global _closedir
+    .type _closedir, @function
+_closedir:
+    li      a7, 92           # closedir(handle=a0) → 0 / -1
+    ecall
+    ret
+    .size _closedir, . - _closedir
+
+    .global _nanosleep
+    .type _nanosleep, @function
+_nanosleep:
+    li      a7, 101          # nanosleep(req=a0, rem=a1) → 0 / -1
+    ecall
+    ret
+    .size _nanosleep, . - _nanosleep

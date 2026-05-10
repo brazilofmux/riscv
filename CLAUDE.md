@@ -35,7 +35,11 @@ Guest programs invoke host services through the RISC-V `ecall` instruction using
 | 63 | read | a0=fd, a1=buf, a2=len |
 | 64 | write | a0=fd, a1=buf, a2=len |
 | 80 | fstat | stub, returns -1 |
+| 90 | opendir | a0=path → directory handle (>=0) or -1 |
+| 91 | readdir | a0=handle, a1=struct dirent buf → 0 / -1 |
+| 92 | closedir | a0=handle |
 | 93 | exit | a0=exit_code |
+| 101 | nanosleep | a0=req timespec, a1=rem timespec or 0 |
 | 214 | brk | stub, returns 0 (malloc is self-managed) |
 | 403 | clock_gettime | a0=clockid, a1=tp_addr |
 | 404 | get_cpu_clock | returns host clock() |

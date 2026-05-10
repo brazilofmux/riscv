@@ -68,13 +68,11 @@ int gettimeofday(struct timeval *tv, void *tz) {
     return 0;
 }
 
+extern int _nanosleep(const struct timespec *req, struct timespec *rem);
+
 int nanosleep(const struct timespec *req, struct timespec *rem) {
-    /* No host nanosleep ECALL — return immediately, claim full sleep
-     * happened. Programs that depend on real timing will diverge from
-     * wall-clock but won't deadlock. */
-    (void)req;
-    if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
-    return 0;
+    if (!req) return -1;
+    return _nanosleep(req, rem);
 }
 
 struct tm *gmtime(const time_t *timep) {
