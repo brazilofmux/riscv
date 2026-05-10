@@ -9,19 +9,18 @@ The one remaining checklist item. Now that 7 real programs are ported, we have m
 Done: trampoline, full RV32IMFD integer + FP translator (`dbt_a64.c` plus
 `emit_a64.h` instruction emitters), block chaining via inline cache,
 intrinsic native stubs (memcpy/memset/memmove/strlen), LUI/AUIPC + ADDI
-fusion, 8-slot LRU integer register cache (X22-X28 + X15). All 314 tests
-pass under JIT on aarch64; lisp 17-stress is ~9x over interpreter, the
-CPU-bound benchmark_core is ~7.6x over interpreter (~3.4 BIPS, up from
-1.5 before the cache).
+fusion, SLT+branch fusion (correct but inert on current GCC output),
+8-slot LRU integer register cache (X22-X28 + X15), and superblocks with
+per-side-exit cache snapshots. All 314 tests pass under JIT on aarch64;
+lisp 17-stress is ~11x over interpreter, the CPU-bound benchmark_core
+is ~9x over interpreter (~4 BIPS, up from 1.5 before the cache).
 
 Still to do, in roughly priority order:
+- **Back-edge / self-loop optimization** — pre-warm the register cache
+  at block entry and have the loop's back-edge jump into the warm entry,
+  skipping the cold loads on every iteration.
 - **AUIPC+JALR fusion** — direct call to known target, like JAL chained.
-- **SLT+branch fusion** — fold `slt; bnez` into a single B.cond.
 - **AUIPC+load/store fusion** — known address as imm offset.
-- **Diamond merge** for short forward branches.
-- **Superblocks with side-exit snapshots** (the register cache groundwork
-  is now in place; superblock side-exits would need to snapshot the cache
-  state at branch points like the x86 backend does).
 - **FP register cache** — the 8 callee-saved D-registers (D8-D15) are
   unused; a small LRU for FP would help the FP-heavy tests.
 
@@ -40,6 +39,22 @@ push/pop cost without claiming any benefit. A different RAS shape that
 leverages the *hardware* RAS — e.g. translating guest calls/rets to host
 BLR/RET pairs through a per-function stub — might be profitable but is
 a much bigger structural change than the porting work above.
+
+Tried and reverted: **Diamond merge for short forward branches**. A
+faithful port of the x86 diamond merge (b.cond skips a tiny body of
+≤3 straight-line insns; both arms converge with empty cache) measured
+~10% slower on benchmark_core under alternating-binary comparison and
+roughly neutral on lisp. The mechanism is correct (4 merges fired in
+benchmark_core, 22 in lisp) but the trade is bad on this host: the
+required rc_flush + rc_init on both sides of the diamond forces cold
+LDRs for every register accessed in the post-merge code, and that cost
+exceeds what we save by avoiding the chained-cache dispatch (which is
+itself only ~9 host instructions). Same root cause as the RAS regression
+— our chained_exit is too cheap for the optimizations that target
+"avoid dispatch" to pay off. A diamond merge that *preserves* cache
+state across the body (e.g. by translating the body without going
+through the cache, or by a more careful liveness analysis) might be
+profitable but is significantly more complex.
 
 ### Register cache expansion (x86 side)
 The 8-slot LRU cache (RSI, RDI, R8-R11, R14, R15) is the main translation bottleneck for register-heavy loops on x86-64, which doesn't have more GPRs to spare without going through XMM.
