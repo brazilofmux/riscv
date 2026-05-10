@@ -461,13 +461,25 @@ static inline void emit_umull(emit_t *e, a64_reg_t rd, a64_reg_t rn, a64_reg_t r
     emit_inst(e, inst);
 }
 
-/* SMADDL Xd, Wn, Wm, Xa  (signed 32x32+64 → 64) — supports MULHSU together
- * with sign-extension of one operand; not used in the trivial path but
- * kept here because the encoding sits next to SMULL. */
+/* SMADDL Xd, Wn, Wm, Xa  (signed 32x32+64 → 64) */
 static inline void emit_smaddl(emit_t *e, a64_reg_t rd, a64_reg_t rn, a64_reg_t rm, a64_reg_t ra) {
     uint32_t inst = 0x9B200000u | ((uint32_t)(rm & 0x1F) << 16)
                   | ((uint32_t)(ra & 0x1F) << 10)
                   | ((uint32_t)(rn & 0x1F) <<  5) | (rd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* MUL Xd, Xn, Xm  (64-bit MADD with Ra=XZR) — used by MULHSU to combine a
+ * sign-extended and a zero-extended operand into a 64-bit product. */
+static inline void emit_mul_x64(emit_t *e, a64_reg_t rd, a64_reg_t rn, a64_reg_t rm) {
+    uint32_t inst = 0x9B007C00u | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (rd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* SXTW Xd, Wn  (SBFM Xd, Xn, #0, #31) — sign-extend a 32-bit value to 64. */
+static inline void emit_sxtw_x64_w32(emit_t *e, a64_reg_t rd, a64_reg_t rn) {
+    uint32_t inst = 0x93407C00u | ((uint32_t)(rn & 0x1F) << 5) | (rd & 0x1F);
     emit_inst(e, inst);
 }
 
@@ -727,9 +739,25 @@ static inline void emit_ldp_x64_post(emit_t *e, a64_reg_t rt1, a64_reg_t rt2, a6
     emit_inst(e, inst);
 }
 
-/* SP-based pre/post-index variants — the SP form is the same encoding with
- * Rn=31. Provided as named helpers because the trampoline reads more
- * naturally with these. */
+/* STP Xt1, Xt2, [Xn, #imm]   (unsigned offset, no write-back) */
+static inline void emit_stp_x64_off(emit_t *e, a64_reg_t rt1, a64_reg_t rt2, a64_reg_t rn, int imm) {
+    int32_t scaled = imm / 8;
+    uint32_t inst = 0xA9000000u | (((uint32_t)scaled & 0x7Fu) << 15)
+                  | ((uint32_t)(rt2 & 0x1F) << 10)
+                  | ((uint32_t)(rn  & 0x1F) <<  5) | (rt1 & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* LDP Xt1, Xt2, [Xn, #imm]   (unsigned offset, no write-back) */
+static inline void emit_ldp_x64_off(emit_t *e, a64_reg_t rt1, a64_reg_t rt2, a64_reg_t rn, int imm) {
+    int32_t scaled = imm / 8;
+    uint32_t inst = 0xA9400000u | (((uint32_t)scaled & 0x7Fu) << 15)
+                  | ((uint32_t)(rt2 & 0x1F) << 10)
+                  | ((uint32_t)(rn  & 0x1F) <<  5) | (rt1 & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* SP-based pre/post-index variants — same encoding with Rn=31. */
 static inline void emit_stp_pre_sp(emit_t *e, a64_reg_t rt1, a64_reg_t rt2, int imm) {
     emit_stp_x64_pre(e, rt1, rt2, A64_SP, imm);
 }
