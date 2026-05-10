@@ -11,6 +11,11 @@ RUNTIME_LIBC = ../runtime/libc.a
 
 all: prolog.elf
 
+# Build runtime via its own Makefile. Without this rule Make falls back to
+# its built-in .s.o rule and assembles crt0.s with the *host* assembler.
+$(RUNTIME_CRT0) $(RUNTIME_LIBC):
+	@$(MAKE) -C ../runtime
+
 prolog.elf: $(OBJS) $(RUNTIME_CRT0) $(RUNTIME_LIBC)
 	$(CC) $(LDFLAGS) $(RUNTIME_CRT0) $(OBJS) $(RUNTIME_LIBC) -lgcc -o $@
 

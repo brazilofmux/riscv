@@ -13,6 +13,11 @@ RUNTIME_LIBC = ../runtime/libc.a
 
 all: lua.elf
 
+# Build runtime via its own Makefile. Without this rule Make falls back to
+# its built-in .s.o rule and assembles crt0.s with the *host* assembler.
+$(RUNTIME_CRT0) $(RUNTIME_LIBC):
+	@$(MAKE) -C ../runtime
+
 lua.elf: $(LUA_OBJS) $(RUNTIME_CRT0) $(RUNTIME_LIBC)
 	$(CC) $(LDFLAGS) $(RUNTIME_CRT0) $(LUA_OBJS) $(RUNTIME_LIBC) -lgcc -o $@
 

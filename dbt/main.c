@@ -29,7 +29,11 @@ static void signal_handler(int sig) {
 static void usage(const char *prog) {
     fprintf(stderr, "Usage: %s [options] program.elf [guest-args...]\n", prog);
     fprintf(stderr, "\nOptions:\n");
+#if defined(__x86_64__)
     fprintf(stderr, "  -i       Use interpreter (default: DBT)\n");
+#else
+    fprintf(stderr, "  -i       Use interpreter (forced on this host: DBT backend is x86-64 only)\n");
+#endif
     fprintf(stderr, "  -s       Show stats on exit\n");
     fprintf(stderr, "  -h       Show this help\n");
     fprintf(stderr, "\nRV32IM microcontroller binary executor.\n");
@@ -136,6 +140,17 @@ int main(int argc, char *argv[]) {
         usage(argv[0]);
         return 1;
     }
+
+#if !defined(__x86_64__)
+    /* The DBT emits raw x86-64 into a code page; running it on any other
+     * host CPU SIGILLs immediately. Force interpreter mode and tell the
+     * user once (only when they didn't already ask for -i). */
+    if (!use_interp) {
+        fprintf(stderr,
+            "rv32-run: no JIT backend for this host CPU; using interpreter.\n");
+        use_interp = 1;
+    }
+#endif
 
     /* Guest args: argv[elf_arg_index .. argc-1] */
     int guest_argc = argc - elf_arg_index;
