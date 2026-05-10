@@ -5,11 +5,27 @@
 ### Benchmark vs QEMU
 The one remaining checklist item. Now that 7 real programs are ported, we have meaningful workloads to measure. Key metrics: startup time, sustained throughput (Lua benchmarks, dBASE bulk operations), and code size overhead.
 
-### ARM64 host backend
-The emitter (`emit_x64.h`) is x86-64 only. An ARM64 backend would enable running on Apple Silicon and Raspberry Pi. The register cache, block chaining, and superblock architecture are host-agnostic — only the emitter and trampoline need porting.
+### AArch64 host backend (baseline shipped — needs the rest of the optimizations)
+Done: trampoline, full RV32IMFD integer + FP translator (`dbt_a64.c` plus
+`emit_a64.h` instruction emitters), block chaining via inline cache,
+intrinsic native stubs (memcpy/memset/memmove/strlen), LUI/AUIPC + ADDI
+fusion. All 280+ tests pass under JIT on aarch64; lisp 17-stress is ~5x
+over interpreter, the CPU-bound benchmark is ~3.4x (1.5 BIPS).
 
-### Register cache expansion
-The 8-slot LRU cache (RSI, RDI, R8-R11, R14, R15) is the main translation bottleneck for register-heavy loops. x86-64 doesn't have more GPRs to spare, but an ARM64 backend could use 16+ cache slots, eliminating most spill/reload overhead.
+Still to do, in roughly priority order:
+- **Register cache** (biggest remaining win). AArch64 has ~11 callee-saved
+  GPRs free (X22-X28 plus X22-X29 via STP saves) for cache slots — a
+  16-slot LRU would eliminate most ctx round-trips on register-heavy
+  loops. Would close most of the gap to native.
+- **RAS for JALR returns** — modest single-percent win on call-heavy code.
+- **AUIPC+JALR fusion** — direct call to known target, like JAL chained.
+- **SLT+branch fusion** — fold `slt; bnez` into a single B.cond.
+- **AUIPC+load/store fusion** — known address as imm offset.
+- **Diamond merge** for short forward branches.
+- **Superblocks with side-exit snapshots** (depends on register cache).
+
+### Register cache expansion (x86 side)
+The 8-slot LRU cache (RSI, RDI, R8-R11, R14, R15) is the main translation bottleneck for register-heavy loops on x86-64, which doesn't have more GPRs to spare without going through XMM.
 
 ### Peephole optimizer
 Currently listed in the architecture section but not implemented. Post-translation peephole passes could:

@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A lightweight, high-performance dynamic binary translator for **RV32IMFD** (RISC-V 32-bit, Integer + Multiply/Divide + Single/Double Float) targeting microcontroller-class binaries. Think of it as a fast, portable execution environment: compile your C/C++ code for RV32IMFD, run it at near-native speed on any host (x86-64, ARM64, RISC-V64).
+A lightweight, high-performance dynamic binary translator for **RV32IMFD** (RISC-V 32-bit, Integer + Multiply/Divide + Single/Double Float) targeting microcontroller-class binaries. Think of it as a fast, portable execution environment: compile your C/C++ code for RV32IMFD, run it at near-native speed on any host (x86-64, AArch64). On unsupported hosts, the binary falls back to the interpreter.
 
 This project is a spiritual successor to the SLOW-32 project at `~/slow-32`. All the techniques and lessons from that project apply here, but we use the standard RISC-V toolchain instead of a custom one.
 
@@ -67,11 +67,27 @@ The DBT accepts standard RV32IMFD ELF binaries but validates:
 5. **Block Cache** — direct-mapped hash table (64K entries x 16 bytes)
 
 ### Host Register Convention
+**x86-64 backend (`dbt_x64.c`, full optimizations):**
 - RBX = pointer to `rv32_ctx_t` (guest register file)
 - R12 = guest memory base pointer
 - R13 = block cache base pointer
 - RAX, RCX, RDX = scratch (used by mul/div, cache probes)
 - RSI, RDI, R8-R11, R14, R15 = register cache slots
+
+**AArch64 backend (`dbt_a64.c`, baseline + chaining + intrinsics + LUI/AUIPC fusion):**
+- X19 = pointer to `rv32_ctx_t`
+- X20 = guest memory base pointer
+- X21 = block cache base pointer
+- X9-X12 = scratch (computation, address calculation, cache probes)
+- X14 = JALR target staging
+- D0-D2 = FP scratch
+- (No register cache yet — every guest reg access goes through ctx memory.
+   Adding one is the largest remaining perf opportunity; AArch64 has 11+
+   spare callee-saved GPRs available for slots.)
+
+The two backends share `dbt_common.c` (block cache, ECALL handler, run loop,
+init/cleanup). The Makefile picks the right per-arch translator via
+`uname -m`.
 
 ## RV32IMFD Quick Reference
 
@@ -231,4 +247,9 @@ Intentional stubs (acceptable for microcontroller profile): directory ops, sleep
 - [x] RV32F/D floating-point extensions (interpreter + JIT)
 - [x] FP test suite (50 tests)
 - [x] 8 ported programs, 280+ tests passing
+- [x] AArch64 host backend (`dbt_a64.c`): trampoline, integer + FP
+      translator, block chaining, intrinsic stubs, LUI/AUIPC fusion.
+      All 280+ tests pass; ~3-5× over interpreter on RV32IMFD workloads.
+      Pending: register cache, RAS, AUIPC+JALR fusion, SLT+branch fusion,
+      diamond merge, superblocks.
 - [ ] Benchmark vs QEMU
