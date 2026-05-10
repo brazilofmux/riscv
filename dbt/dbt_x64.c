@@ -389,12 +389,126 @@ static void rc_flush(emit_t *e, reg_cache_t *rc) {
             emit_store_guest(e, rc->slots[i].guest_reg, rc_host_regs[i]);
 }
 
+/* ---- FP register cache (doubles only) ----
+ *
+ * Caches up to FP_NUM_SLOTS guest f-registers in host XMM2..XMM9. The
+ * cache is DOUBLES-ONLY: single-precision FP ops (FLW/FSW/FADD.S/...)
+ * and conversions evict the slots for any involved fp_regs and operate
+ * on ctx directly. This keeps cache slots type-coherent (always 64-bit
+ * double, properly stored to ctx as a double on flush) and avoids a
+ * NaN-boxing dance inside cache slots.
+ *
+ * XMM0/XMM1 remain scratch — used as temporaries inside the cache binop
+ * helpers and by the single-precision and conversion paths. System V
+ * x64 has no callee-saved XMMs, so the cache MUST be fully flushed
+ * before any host call (intrinsic stub, ECALL bridge); the only such
+ * calls happen via block-exit paths, which the block-exit fp_rc_flush
+ * already covers. */
+
+#define FP_NUM_SLOTS 8
+#define FP_FIRST_XMM 2  /* slot N → XMM[FP_FIRST_XMM + N] = XMM2..XMM9 */
+
+typedef struct {
+    int fp_reg;     /* -1 = free; otherwise guest f-register number */
+    int dirty;
+    int last_use;
+} fp_slot_t;
+
+typedef struct {
+    fp_slot_t slots[FP_NUM_SLOTS];
+    int clock;
+} fp_cache_t;
+
+static int fp_slot_xmm(int slot) { return FP_FIRST_XMM + slot; }
+
+static void fp_rc_init(fp_cache_t *fc) {
+    for (int i = 0; i < FP_NUM_SLOTS; i++) {
+        fc->slots[i].fp_reg = -1;
+        fc->slots[i].dirty = 0;
+        fc->slots[i].last_use = 0;
+    }
+    fc->clock = 0;
+}
+
+static int fp_rc_find(fp_cache_t *fc, int fp_reg) {
+    for (int i = 0; i < FP_NUM_SLOTS; i++)
+        if (fc->slots[i].fp_reg == fp_reg) return i;
+    return -1;
+}
+
+static int fp_rc_alloc(fp_cache_t *fc, emit_t *e) {
+    for (int i = 0; i < FP_NUM_SLOTS; i++)
+        if (fc->slots[i].fp_reg == -1) return i;
+    int lru = 0;
+    for (int i = 1; i < FP_NUM_SLOTS; i++)
+        if (fc->slots[i].last_use < fc->slots[lru].last_use) lru = i;
+    if (fc->slots[lru].dirty)
+        emit_store_fp_d(e, fc->slots[lru].fp_reg, fp_slot_xmm(lru));
+    fc->slots[lru].fp_reg = -1;
+    fc->slots[lru].dirty = 0;
+    return lru;
+}
+
+/* Read fp_reg as a double; returns the XMM index (2..9). On miss,
+ * loads the full 64 bits from ctx. */
+static int fp_rc_read_d(emit_t *e, fp_cache_t *fc, int fp_reg) {
+    int slot = fp_rc_find(fc, fp_reg);
+    if (slot >= 0) {
+        fc->slots[slot].last_use = ++fc->clock;
+        return fp_slot_xmm(slot);
+    }
+    slot = fp_rc_alloc(fc, e);
+    int xmm = fp_slot_xmm(slot);
+    emit_load_fp_d(e, xmm, fp_reg);
+    fc->slots[slot].fp_reg = fp_reg;
+    fc->slots[slot].dirty = 0;
+    fc->slots[slot].last_use = ++fc->clock;
+    return xmm;
+}
+
+/* Allocate a slot to write fp_reg as a double; returns the XMM index.
+ * Marks dirty. */
+static int fp_rc_write_d(emit_t *e, fp_cache_t *fc, int fp_reg) {
+    int slot = fp_rc_find(fc, fp_reg);
+    if (slot < 0) slot = fp_rc_alloc(fc, e);
+    fc->slots[slot].fp_reg = fp_reg;
+    fc->slots[slot].dirty = 1;
+    fc->slots[slot].last_use = ++fc->clock;
+    return fp_slot_xmm(slot);
+}
+
+/* Evict fp_reg from the cache, flushing if dirty. Used by S-form ops
+ * and conversions that need ctx to be coherent before reading/writing
+ * via direct-ctx access. Safe to call on any reg number — it's a
+ * no-op if the reg isn't in the cache. */
+static void fp_rc_evict(emit_t *e, fp_cache_t *fc, int fp_reg) {
+    int slot = fp_rc_find(fc, fp_reg);
+    if (slot < 0) return;
+    if (fc->slots[slot].dirty)
+        emit_store_fp_d(e, fp_reg, fp_slot_xmm(slot));
+    fc->slots[slot].fp_reg = -1;
+    fc->slots[slot].dirty = 0;
+}
+
+static void fp_rc_flush(emit_t *e, fp_cache_t *fc) {
+    for (int i = 0; i < FP_NUM_SLOTS; i++)
+        if (fc->slots[i].fp_reg >= 0 && fc->slots[i].dirty)
+            emit_store_fp_d(e, fc->slots[i].fp_reg, fp_slot_xmm(i));
+}
+
+static void fp_rc_flush_snapshot(emit_t *e, const fp_slot_t *snapshot) {
+    for (int i = 0; i < FP_NUM_SLOTS; i++)
+        if (snapshot[i].fp_reg >= 0 && snapshot[i].dirty)
+            emit_store_fp_d(e, snapshot[i].fp_reg, fp_slot_xmm(i));
+}
+
 /* ---- Superblock side exits ---- */
 
 typedef struct {
-    uint32_t jcc_patch;                /* offset of jcc rel32 displacement */
-    uint32_t target_pc;                /* guest PC for taken path */
-    rc_slot_t snapshot[RC_NUM_SLOTS];  /* cache state at branch point */
+    uint32_t jcc_patch;                  /* offset of jcc rel32 displacement */
+    uint32_t target_pc;                  /* guest PC for taken path */
+    rc_slot_t snapshot[RC_NUM_SLOTS];    /* int cache state at branch point */
+    fp_slot_t fp_snapshot[FP_NUM_SLOTS]; /* FP cache state at branch point */
 } side_exit_t;
 
 #define MAX_SIDE_EXITS 8
@@ -402,7 +516,7 @@ typedef struct {
 /* Translate a single straight-line instruction (no control flow).
  * Returns 0 on success, -1 if the opcode cannot be handled inline. */
 static int translate_one(dbt_state_t *dbt __attribute__((unused)),
-                         emit_t *e, reg_cache_t *rc,
+                         emit_t *e, reg_cache_t *rc, fp_cache_t *fc,
                          rv32_insn_t *insn, uint32_t pc) {
     switch (insn->opcode) {
 
@@ -659,13 +773,14 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
     case OP_FP_LOAD: {
         int rs1 = rc_read(e, rc, insn->rs1);
         if (insn->funct3 == 2) {
-            /* FLW: load float from memory, NaN-box into f[] */
+            /* FLW: bypass cache (NaN-boxed single in ctx) */
+            fp_rc_evict(e, fc, insn->rd);
             emit_load_mem_f32(e, XMM0, rs1, insn->imm);
             emit_store_fp_s(e, insn->rd, XMM0);
         } else {
-            /* FLD: load double from memory */
-            emit_load_mem_f64(e, XMM0, rs1, insn->imm);
-            emit_store_fp_d(e, insn->rd, XMM0);
+            /* FLD: load double directly into cache slot */
+            int rd_xmm = fp_rc_write_d(e, fc, insn->rd);
+            emit_load_mem_f64(e, rd_xmm, rs1, insn->imm);
         }
         return 0;
     }
@@ -673,13 +788,14 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
     case OP_FP_STORE: {
         int rs1 = rc_read(e, rc, insn->rs1);
         if (insn->funct3 == 2) {
-            /* FSW: store float to memory */
+            /* FSW: bypass cache (NaN-boxed single in ctx) */
+            fp_rc_evict(e, fc, insn->rs2);
             emit_load_fp_s(e, XMM0, insn->rs2);
             emit_store_mem_f32(e, rs1, XMM0, insn->imm);
         } else {
-            /* FSD: store double to memory */
-            emit_load_fp_d(e, XMM0, insn->rs2);
-            emit_store_mem_f64(e, rs1, XMM0, insn->imm);
+            /* FSD: read double from cache, store to memory */
+            int rs2_xmm = fp_rc_read_d(e, fc, insn->rs2);
+            emit_store_mem_f64(e, rs1, rs2_xmm, insn->imm);
         }
         return 0;
     }
@@ -687,7 +803,10 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
     case OP_FMADD: case OP_FMSUB: case OP_FNMSUB: case OP_FNMADD: {
         int fmt = insn->funct7 & 3;
         if (fmt == 0) {
-            /* Single-precision FMA: use XMM0 = rs1, XMM1 = rs2, load rs3 last */
+            /* Single-precision FMA: bypass cache, evict involved fp_regs */
+            fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+            fp_rc_evict(e, fc, insn->rs3); fp_rc_evict(e, fc, insn->rd);
+            /* use XMM0 = rs1, XMM1 = rs2, load rs3 last */
             emit_load_fp_s(e, XMM0, insn->rs1);
             emit_load_fp_s(e, XMM1, insn->rs2);
             /* Negate rs1 for FNMSUB/FNMADD: xorps with sign bit */
@@ -713,23 +832,25 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
             }
             emit_store_fp_s(e, insn->rd, XMM0);
         } else {
-            /* Double-precision FMA */
-            emit_load_fp_d(e, XMM0, insn->rs1);
-            emit_load_fp_d(e, XMM1, insn->rs2);
+            /* Double-precision FMA via cache.
+             * Read rs1/rs2/rs3 from cache; compute in XMM0; write rd. */
+            int rs1_xmm = fp_rc_read_d(e, fc, insn->rs1);
+            int rs2_xmm = fp_rc_read_d(e, fc, insn->rs2);
+            int rs3_xmm = fp_rc_read_d(e, fc, insn->rs3);
             if (insn->opcode == OP_FNMSUB || insn->opcode == OP_FNMADD) {
-                emit_movaps(e, XMM1, XMM0);
-                emit_xorpd(e, XMM0, XMM0);
-                emit_subsd(e, XMM0, XMM1);
-                emit_load_fp_d(e, XMM1, insn->rs2);
-            }
-            emit_mulsd(e, XMM0, XMM1);
-            emit_load_fp_d(e, XMM1, insn->rs3);
-            if (insn->opcode == OP_FMSUB || insn->opcode == OP_FNMADD) {
-                emit_subsd(e, XMM0, XMM1);
+                emit_xorpd(e, XMM0, XMM0);     /* XMM0 = 0 */
+                emit_subsd(e, XMM0, rs1_xmm);  /* XMM0 = -rs1 */
             } else {
-                emit_addsd(e, XMM0, XMM1);
+                emit_movaps(e, XMM0, rs1_xmm); /* XMM0 = rs1 */
             }
-            emit_store_fp_d(e, insn->rd, XMM0);
+            emit_mulsd(e, XMM0, rs2_xmm);      /* XMM0 = ±rs1 * rs2 */
+            if (insn->opcode == OP_FMSUB || insn->opcode == OP_FNMADD) {
+                emit_subsd(e, XMM0, rs3_xmm);
+            } else {
+                emit_addsd(e, XMM0, rs3_xmm);
+            }
+            int rd_xmm = fp_rc_write_d(e, fc, insn->rd);
+            emit_movaps(e, rd_xmm, XMM0);
         }
         return 0;
     }
@@ -741,69 +862,90 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
         switch (funct5) {
         case 0x00: /* FADD */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+                fp_rc_evict(e, fc, insn->rd);
                 emit_load_fp_s(e, XMM0, insn->rs1);
                 emit_load_fp_s(e, XMM1, insn->rs2);
                 emit_addss(e, XMM0, XMM1);
                 emit_store_fp_s(e, insn->rd, XMM0);
             } else {
-                emit_load_fp_d(e, XMM0, insn->rs1);
-                emit_load_fp_d(e, XMM1, insn->rs2);
-                emit_addsd(e, XMM0, XMM1);
-                emit_store_fp_d(e, insn->rd, XMM0);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+                emit_movaps(e, XMM0, rs1);
+                emit_addsd(e, XMM0, rs2);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                emit_movaps(e, rd, XMM0);
             }
             return 0;
         case 0x01: /* FSUB */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+                fp_rc_evict(e, fc, insn->rd);
                 emit_load_fp_s(e, XMM0, insn->rs1);
                 emit_load_fp_s(e, XMM1, insn->rs2);
                 emit_subss(e, XMM0, XMM1);
                 emit_store_fp_s(e, insn->rd, XMM0);
             } else {
-                emit_load_fp_d(e, XMM0, insn->rs1);
-                emit_load_fp_d(e, XMM1, insn->rs2);
-                emit_subsd(e, XMM0, XMM1);
-                emit_store_fp_d(e, insn->rd, XMM0);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+                emit_movaps(e, XMM0, rs1);
+                emit_subsd(e, XMM0, rs2);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                emit_movaps(e, rd, XMM0);
             }
             return 0;
         case 0x02: /* FMUL */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+                fp_rc_evict(e, fc, insn->rd);
                 emit_load_fp_s(e, XMM0, insn->rs1);
                 emit_load_fp_s(e, XMM1, insn->rs2);
                 emit_mulss(e, XMM0, XMM1);
                 emit_store_fp_s(e, insn->rd, XMM0);
             } else {
-                emit_load_fp_d(e, XMM0, insn->rs1);
-                emit_load_fp_d(e, XMM1, insn->rs2);
-                emit_mulsd(e, XMM0, XMM1);
-                emit_store_fp_d(e, insn->rd, XMM0);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+                emit_movaps(e, XMM0, rs1);
+                emit_mulsd(e, XMM0, rs2);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                emit_movaps(e, rd, XMM0);
             }
             return 0;
         case 0x03: /* FDIV */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+                fp_rc_evict(e, fc, insn->rd);
                 emit_load_fp_s(e, XMM0, insn->rs1);
                 emit_load_fp_s(e, XMM1, insn->rs2);
                 emit_divss(e, XMM0, XMM1);
                 emit_store_fp_s(e, insn->rd, XMM0);
             } else {
-                emit_load_fp_d(e, XMM0, insn->rs1);
-                emit_load_fp_d(e, XMM1, insn->rs2);
-                emit_divsd(e, XMM0, XMM1);
-                emit_store_fp_d(e, insn->rd, XMM0);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+                emit_movaps(e, XMM0, rs1);
+                emit_divsd(e, XMM0, rs2);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                emit_movaps(e, rd, XMM0);
             }
             return 0;
         case 0x0B: /* FSQRT */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rd);
                 emit_load_fp_s(e, XMM0, insn->rs1);
                 emit_sqrtss(e, XMM0, XMM0);
                 emit_store_fp_s(e, insn->rd, XMM0);
             } else {
-                emit_load_fp_d(e, XMM0, insn->rs1);
-                emit_sqrtsd(e, XMM0, XMM0);
-                emit_store_fp_d(e, insn->rd, XMM0);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                emit_sqrtsd(e, XMM0, rs1);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                emit_movaps(e, rd, XMM0);
             }
             return 0;
 
         case 0x04: /* FSGNJ / FSGNJN / FSGNJX */
+            /* Bypass cache: integer-bit manipulation on ctx. */
+            fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+            fp_rc_evict(e, fc, insn->rd);
             if (fmt == 0) {
                 /* Single-precision sign injection — use integer ops on raw bits */
                 int off1 = CTX_FP_OFF + insn->rs1 * 8;
@@ -912,6 +1054,9 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
             return 0;
 
         case 0x05: /* FMIN / FMAX */
+            /* Bypass cache: simpler than threading min/maxsd through it. */
+            fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+            fp_rc_evict(e, fc, insn->rd);
             if (fmt == 0) {
                 emit_load_fp_s(e, XMM0, insn->rs1);
                 emit_load_fp_s(e, XMM1, insn->rs2);
@@ -936,6 +1081,7 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
             return 0;
 
         case 0x14: { /* FEQ / FLT / FLE (compare → integer rd) */
+            fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
             int rd = insn->rd ? rc_write(e, rc, insn->rd) : X64_RAX;
             if (fmt == 0) {
                 emit_load_fp_s(e, XMM0, insn->rs1);
@@ -979,6 +1125,7 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
         }
 
         case 0x18: /* FCVT.W.S/WU.S / FCVT.W.D/WU.D (float/double → int32) */
+            fp_rc_evict(e, fc, insn->rs1);
             if (fmt == 0) {
                 emit_load_fp_s(e, XMM0, insn->rs1);
                 if (insn->rs2 == 0) {
@@ -1002,6 +1149,7 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
             return 0;
 
         case 0x1A: /* FCVT.S.W/WU / FCVT.D.W/WU (int32 → float/double) */
+            fp_rc_evict(e, fc, insn->rd);
             rc_load(e, rc, X64_RAX, insn->rs1);
             if (fmt == 0) {
                 if (insn->rs2 == 0) {
@@ -1026,6 +1174,7 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
             return 0;
 
         case 0x08: /* FCVT.S.D / FCVT.D.S */
+            fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rd);
             if (fmt == 0) {
                 /* FCVT.S.D — double → float */
                 emit_load_fp_d(e, XMM0, insn->rs1);
@@ -1040,6 +1189,7 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
             return 0;
 
         case 0x1C: /* FMV.X.W / FCLASS */
+            fp_rc_evict(e, fc, insn->rs1);
             if (fmt == 0 && insn->funct3 == 0) {
                 /* FMV.X.W — move FP bits to integer register */
                 int off = CTX_FP_OFF + insn->rs1 * 8;
@@ -1055,6 +1205,7 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
             return 0;
 
         case 0x1E: /* FMV.W.X */
+            fp_rc_evict(e, fc, insn->rd);
             if (fmt == 0 && insn->funct3 == 0) {
                 /* FMV.W.X — move integer bits to FP register */
                 rc_load(e, rc, X64_RAX, insn->rs1);
@@ -1297,6 +1448,8 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
 
     reg_cache_t rc;
     rc_init(&rc);
+    fp_cache_t fc;
+    fp_rc_init(&fc);
 
     /* Self-loop detection: pre-scan to find if any branch targets start_pc.
      * If so, pre-warm the register cache and record a warm_entry point.
@@ -1410,6 +1563,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
     while (count < MAX_BLOCK_INSNS) {
         if (pc + 4 > dbt->bin->code_end) {
             rc_flush(&e, &rc);
+            fp_rc_flush(&e, &fc);
             emit_exit_chained(&e, pc);
             break;
         }
@@ -1474,6 +1628,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 }
 
                 rc_flush(&e, &rc);
+                fp_rc_flush(&e, &fc);
                 emit_exit_chained(&e, target);
                 count++;
                 goto done;
@@ -1579,9 +1734,23 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                      * Uses all branch paths: self-loop, diamond, superblock, normal. */
                     { emit_branch:;
                         if (self_loop && pc + branch_imm == guest_pc) {
+                            /* The int cache stays warm across iterations:
+                             * pre-loaded at warm_entry and never re-read in
+                             * the body, so we don't flush ints before the
+                             * back-edge. The FP cache, however, has NO
+                             * warm-entry pre-load — the body's first
+                             * fp_rc_read of each fp_reg lazily emits a
+                             * MOVSD-from-ctx. On iteration 2 that MOVSD
+                             * re-runs and would see STALE ctx unless
+                             * iteration 1's dirty FP writes were flushed
+                             * back. So flush FP before the jcc. Within-
+                             * iteration cache hits still pay for the M
+                             * STRs per iteration on FP-heavy loops. */
+                            fp_rc_flush(&e, &fc);
                             emit_jcc_rel32(&e, branch_jcc);
                             emit_patch_rel32(&e, emit_pos(&e) - 4, warm_entry);
                             rc_flush(&e, &rc);
+                            fp_rc_flush(&e, &fc);
                             emit_exit_chained(&e, pc + 4);
                             goto done;
                         }
@@ -1589,7 +1758,9 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                             branch_imm > 0 && branch_imm <= 16 &&
                             dbt_can_diamond_merge(dbt, pc + 4, (uint32_t)(pc + branch_imm))) {
                             rc_flush(&e, &rc);
+                            fp_rc_flush(&e, &fc);
                             rc_init(&rc);
+                            fp_rc_init(&fc);
                             emit_jcc_rel32(&e, branch_jcc);
                             uint32_t merge_patch = emit_pos(&e) - 4;
                             uint32_t merge_target = (uint32_t)(pc + branch_imm);
@@ -1599,12 +1770,14 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                                 memcpy(&fw, dbt->bin->memory + pc, 4);
                                 rv32_insn_t fi;
                                 rv32_decode(fw, &fi);
-                                translate_one(dbt, &e, &rc, &fi, pc);
+                                translate_one(dbt, &e, &rc, &fc, &fi, pc);
                                 pc += 4;
                                 count++;
                             }
                             rc_flush(&e, &rc);
+                            fp_rc_flush(&e, &fc);
                             rc_init(&rc);
+                            fp_rc_init(&fc);
                             emit_patch_rel32(&e, merge_patch, emit_pos(&e));
                             dbt->diamond_merges++;
                             break;
@@ -1615,6 +1788,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                             side_exits[num_side_exits].jcc_patch = emit_pos(&e) - 4;
                             side_exits[num_side_exits].target_pc = (uint32_t)(pc + branch_imm);
                             memcpy(side_exits[num_side_exits].snapshot, rc.slots, sizeof(rc.slots));
+                            memcpy(side_exits[num_side_exits].fp_snapshot, fc.slots, sizeof(fc.slots));
                             num_side_exits++;
                             pc += 4;
                             break;
@@ -1622,9 +1796,11 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                         emit_jcc_rel32(&e, branch_jcc);
                         uint32_t patch_taken = emit_pos(&e) - 4;
                         rc_flush(&e, &rc);
+                        fp_rc_flush(&e, &fc);
                         emit_exit_chained(&e, pc + 4);
                         emit_patch_rel32(&e, patch_taken, emit_pos(&e));
                         rc_flush(&e, &rc);
+                        fp_rc_flush(&e, &fc);
                         emit_exit_chained(&e, pc + branch_imm);
                         goto done;
                     }
@@ -1638,8 +1814,9 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
         case OP_IMM: case OP_REG: case OP_FENCE:
         case OP_FP_LOAD: case OP_FP_STORE: case OP_FP:
         case OP_FMADD: case OP_FMSUB: case OP_FNMSUB: case OP_FNMADD:
-            if (translate_one(dbt, &e, &rc, &insn, pc) < 0) {
+            if (translate_one(dbt, &e, &rc, &fc, &insn, pc) < 0) {
                 rc_flush(&e, &rc);
+                fp_rc_flush(&e, &fc);
                 emit_exit_with_pc(&e, pc);
                 goto done;
             }
@@ -1668,6 +1845,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             if (insn.rd == 1)
                 emit_ras_push(&e, pc + 4);
             rc_flush(&e, &rc);
+            fp_rc_flush(&e, &fc);
             emit_exit_chained(&e, target);
             goto done;
         }
@@ -1685,6 +1863,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             if (insn.rd == 1)
                 emit_ras_push(&e, pc + 4);
             rc_flush(&e, &rc);
+            fp_rc_flush(&e, &fc);
             /* RAS predict for returns (JALR x0, x1, 0 = ret) */
             if (insn.rs1 == 1 && insn.rd == 0 && insn.imm == 0)
                 emit_exit_ras_return(&e);
@@ -1707,6 +1886,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             case BR_BGEU: branch_jcc = JCC_AE; break;
             default:
                 rc_flush(&e, &rc);
+                fp_rc_flush(&e, &fc);
                 emit_exit_with_pc(&e, pc);
                 goto done;
             }
@@ -1720,9 +1900,11 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 pc += 4;
                 if (insn.imm == 0) {
                     rc_flush(&e, &rc);
+                    fp_rc_flush(&e, &fc);
                     emit_exit_with_pc(&e, pc | 1);
                 } else {
                     rc_flush(&e, &rc);
+                    fp_rc_flush(&e, &fc);
                     emit_exit_with_pc(&e, pc | 2);
                 }
                 goto done;
@@ -1737,6 +1919,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 if (csr_addr != 0x001 && csr_addr != 0x002 && csr_addr != 0x003) {
                     /* Unknown CSR — exit to interpreter */
                     rc_flush(&e, &rc);
+                    fp_rc_flush(&e, &fc);
                     emit_exit_with_pc(&e, pc);
                     goto done;
                 }
@@ -1815,17 +1998,20 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             }
             /* Unknown system instruction */
             rc_flush(&e, &rc);
+            fp_rc_flush(&e, &fc);
             emit_exit_with_pc(&e, pc);
             goto done;
 
         default:
             rc_flush(&e, &rc);
+            fp_rc_flush(&e, &fc);
             emit_exit_with_pc(&e, pc);
             goto done;
         }
     }
 
     rc_flush(&e, &rc);
+    fp_rc_flush(&e, &fc);
     emit_exit_chained(&e, pc);
 
 done:
@@ -1841,6 +2027,7 @@ done:
                                  rc_host_regs[j]);
             }
         }
+        fp_rc_flush_snapshot(&e, side_exits[i].fp_snapshot);
         emit_exit_chained(&e, side_exits[i].target_pc);
     }
 

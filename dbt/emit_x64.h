@@ -717,6 +717,7 @@ static inline void emit_store_fp_s(emit_t *e, int freg, int xmm) {
 static inline void emit_load_fp_d(emit_t *e, int xmm, int freg) {
     int off = CTX_FP_OFF + freg * 8;
     emit_byte(e, 0xF2); /* prefix for scalar double */
+    if (reg_hi(xmm)) emit_byte(e, rex(0, reg_hi(xmm), 0, 0));
     emit_byte(e, 0x0F);
     emit_byte(e, 0x10); /* movsd xmm, m64 */
     if (off <= 127) {
@@ -732,6 +733,7 @@ static inline void emit_load_fp_d(emit_t *e, int xmm, int freg) {
 static inline void emit_store_fp_d(emit_t *e, int freg, int xmm) {
     int off = CTX_FP_OFF + freg * 8;
     emit_byte(e, 0xF2);
+    if (reg_hi(xmm)) emit_byte(e, rex(0, reg_hi(xmm), 0, 0));
     emit_byte(e, 0x0F);
     emit_byte(e, 0x11); /* movsd m64, xmm */
     if (off <= 127) {
@@ -766,7 +768,7 @@ static inline void emit_store_mem_f32(emit_t *e, int idx, int xmm, int32_t disp)
 /* movsd xmm, [R12 + idx + disp] — load double from guest memory */
 static inline void emit_load_mem_f64(emit_t *e, int xmm, int idx, int32_t disp) {
     emit_byte(e, 0xF2);
-    emit_byte(e, rex(0, 0, reg_hi(idx), 1));
+    emit_byte(e, rex(0, reg_hi(xmm), reg_hi(idx), 1));
     emit_byte(e, 0x0F);
     emit_byte(e, 0x10);
     emit_sib_disp(e, xmm, idx, disp);
@@ -775,7 +777,7 @@ static inline void emit_load_mem_f64(emit_t *e, int xmm, int idx, int32_t disp) 
 /* movsd [R12 + idx + disp], xmm — store double to guest memory */
 static inline void emit_store_mem_f64(emit_t *e, int idx, int xmm, int32_t disp) {
     emit_byte(e, 0xF2);
-    emit_byte(e, rex(0, 0, reg_hi(idx), 1));
+    emit_byte(e, rex(0, reg_hi(xmm), reg_hi(idx), 1));
     emit_byte(e, 0x0F);
     emit_byte(e, 0x11);
     emit_sib_disp(e, xmm, idx, disp);
@@ -791,7 +793,10 @@ static inline void emit_sse_ss(emit_t *e, uint8_t op, int dst, int src) {
 
 /* Helper: emit prefix + 0F + opcode + modrm for SSE scalar double (F2 prefix) */
 static inline void emit_sse_sd(emit_t *e, uint8_t op, int dst, int src) {
-    emit_byte(e, 0xF2); emit_byte(e, 0x0F); emit_byte(e, op);
+    emit_byte(e, 0xF2);
+    if (reg_hi(dst) || reg_hi(src))
+        emit_byte(e, rex(0, reg_hi(dst), 0, reg_hi(src)));
+    emit_byte(e, 0x0F); emit_byte(e, op);
     emit_byte(e, modrm(0x03, dst, src));
 }
 
@@ -951,13 +956,18 @@ static inline void emit_xorps(emit_t *e, int d, int s) {
 
 /* xorpd xmm, xmm — XOR double (66 0F 57) */
 static inline void emit_xorpd(emit_t *e, int d, int s) {
-    emit_byte(e, 0x66); emit_byte(e, 0x0F); emit_byte(e, 0x57);
+    emit_byte(e, 0x66);
+    if (reg_hi(d) || reg_hi(s))
+        emit_byte(e, rex(0, reg_hi(d), 0, reg_hi(s)));
+    emit_byte(e, 0x0F); emit_byte(e, 0x57);
     emit_byte(e, modrm(0x03, d, s));
 }
 
 /* movaps xmm, xmm (0F 28) */
 static inline void emit_movaps(emit_t *e, int d, int s) {
     if (d == s) return;
+    if (reg_hi(d) || reg_hi(s))
+        emit_byte(e, rex(0, reg_hi(d), 0, reg_hi(s)));
     emit_byte(e, 0x0F); emit_byte(e, 0x28);
     emit_byte(e, modrm(0x03, d, s));
 }
