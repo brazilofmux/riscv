@@ -10,15 +10,21 @@ Done: trampoline, full RV32IMFD integer + FP translator (`dbt_a64.c` plus
 `emit_a64.h` instruction emitters), block chaining via inline cache,
 intrinsic native stubs (memcpy/memset/memmove/strlen), LUI/AUIPC + ADDI
 fusion, SLT+branch fusion (correct but inert on current GCC output),
-8-slot LRU integer register cache (X22-X28 + X15), and superblocks with
-per-side-exit cache snapshots. All 314 tests pass under JIT on aarch64;
-lisp 17-stress is ~11x over interpreter, the CPU-bound benchmark_core
-is ~9x over interpreter (~4 BIPS, up from 1.5 before the cache).
+8-slot LRU integer register cache (X22-X28 + X15), superblocks with
+per-side-exit cache snapshots, and self-loop back-edge optimization
+(warm-entry skips cold loads every iteration). All 314 tests pass
+under JIT on aarch64; benchmark_core is ~13x over interpreter
+(~5.3 BIPS, up from 1.5 before the cache); lisp 17-stress is ~11x.
+
+The pattern that emerged across this work: AArch64's chained-exit
+dispatch is so tight (~9 host instructions, very predictable BR
+target) that any optimization which trades register-cache flushing/
+reset for "skip dispatch" comes out negative — RAS and diamond merge
+both regressed on measured workloads. Optimizations that *preserve*
+cache state (superblocks via snapshots, back-edge to warm_entry) are
+the ones that pay off.
 
 Still to do, in roughly priority order:
-- **Back-edge / self-loop optimization** — pre-warm the register cache
-  at block entry and have the loop's back-edge jump into the warm entry,
-  skipping the cold loads on every iteration.
 - **AUIPC+JALR fusion** — direct call to known target, like JAL chained.
 - **AUIPC+load/store fusion** — known address as imm offset.
 - **FP register cache** — the 8 callee-saved D-registers (D8-D15) are

@@ -251,11 +251,12 @@ Intentional stubs (acceptable for microcontroller profile): directory ops, sleep
 - [x] AArch64 host backend (`dbt_a64.c`): trampoline, integer + FP
       translator, block chaining, intrinsic stubs, LUI/AUIPC fusion,
       SLT+branch fusion, 8-slot LRU integer register cache (X22-X28 +
-      X15), and superblocks with per-side-exit cache snapshots.
-      All 314 tests pass; ~9-11× over interpreter on RV32IMFD workloads
-      (benchmark_core ~4 BIPS, lisp 17-stress 11× over interp).
-      Tried and reverted (regressed on this host — chained-exit is
-      already too cheap for the optimizations to pay off): RAS, diamond
-      merge. Pending: back-edge / self-loop, AUIPC+JALR fusion, FP
+      X15), superblocks with per-side-exit cache snapshots, and
+      self-loop back-edge optimization (warm-entry skips cold loads
+      every iteration). All 314 tests pass; ~11-13× over interpreter on
+      RV32IMFD workloads (benchmark_core ~5.3 BIPS, lisp 17-stress 11×
+      over interp). Tried and reverted (regressed on this host —
+      chained-exit is already too cheap for the optimizations to pay
+      off): RAS, diamond merge. Pending: AUIPC+JALR fusion, FP
       register cache.
 - [ ] Benchmark vs QEMU
