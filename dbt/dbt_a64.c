@@ -162,9 +162,76 @@ static void exit_with_pc(emit_t *e, uint32_t next_pc) {
     emit_ret(e);
 }
 
-/* Same, but next_pc already lives in a W register. */
-static void exit_with_w(emit_t *e, a64_reg_t pc_w) {
+/* Chained exit for a KNOWN target PC. Inline-cache probe against the
+ * block_entry_t at cache[hash(target_pc)]: if guest_pc matches we BR
+ * directly to native_code, skipping the C dispatcher entirely. On miss,
+ * fall through to the same exit-and-return sequence as exit_with_pc.
+ *
+ * X21 = cache base (set by trampoline). 16-byte entries: guest_pc at +0,
+ * pad at +4, native_code at +8.
+ */
+static void chained_exit_known(emit_t *e, uint32_t target_pc) {
+    uint32_t hash_off = (uint32_t)(((target_pc >> 2) & BLOCK_CACHE_MASK) * 16u);
+
+    /* W9 = target_pc (used for both the cache compare and the miss path) */
+    emit_mov_w32_imm32(e, A_S0, target_pc);
+
+    /* X11 = &cache[hash] = X21 + hash_off  (compute via mov+add since
+     * hash_off can exceed the 12-bit ADD-imm range). */
+    emit_mov_w32_imm32(e, A_S1, hash_off);
+    emit_add_x64_w32_uxtw(e, A_S2, A_CACHE, A_S1);
+
+    /* W12 = cache[hash].guest_pc */
+    emit_ldr_w32_imm(e, A_S3, A_S2, 0);
+
+    /* if (W12 != W9) goto miss */
+    emit_cmp_w32_w32(e, A_S3, A_S0);
+    uint32_t bne_off = emit_pos(e);
+    emit_b_cond(e, A64_COND_NE, 0);
+
+    /* hit: X12 = cache[hash].native_code; BR X12 */
+    emit_ldr_x64_imm(e, A_S3, A_S2, 8);
+    emit_br(e, A_S3);
+
+    /* miss: store next_pc, return to dispatcher */
+    uint32_t miss_target = emit_pos(e);
+    emit_patch_cond19(e, bne_off, miss_target);
+    emit_str_w32_imm(e, A_S0, A_CTX, CTX_NEXT_PC_OFF);
+    emit_ret(e);
+}
+
+/* Chained exit for an INDIRECT target (JALR). Target PC is in `pc_w`
+ * (must not be A_S0..A_S3). Always stores next_pc up front so the
+ * dispatcher's ecall check works on miss. */
+static void chained_exit_indirect(emit_t *e, a64_reg_t pc_w) {
+    /* ctx->next_pc = pc_w  (needed up-front for ecall/ebreak detection) */
     emit_str_w32_imm(e, pc_w, A_CTX, CTX_NEXT_PC_OFF);
+
+    /* W9 = (pc_w >> 2) & BLOCK_CACHE_MASK     (the cache index) */
+    emit_lsr_w32_imm(e, A_S0, pc_w, 2);
+    if (!emit_and_w32_imm(e, A_S0, A_S0, (uint32_t)BLOCK_CACHE_MASK)) {
+        emit_mov_w32_imm32(e, A_S1, (uint32_t)BLOCK_CACHE_MASK);
+        emit_and_w32(e, A_S0, A_S0, A_S1);
+    }
+    /* W9 *= 16 (entry size) */
+    emit_lsl_w32_imm(e, A_S0, A_S0, 4);
+
+    /* X11 = &cache[hash] */
+    emit_add_x64_w32_uxtw(e, A_S2, A_CACHE, A_S0);
+
+    /* compare cache[hash].guest_pc with pc_w */
+    emit_ldr_w32_imm(e, A_S3, A_S2, 0);
+    emit_cmp_w32_w32(e, A_S3, pc_w);
+    uint32_t bne_off = emit_pos(e);
+    emit_b_cond(e, A64_COND_NE, 0);
+
+    /* hit */
+    emit_ldr_x64_imm(e, A_S3, A_S2, 8);
+    emit_br(e, A_S3);
+
+    /* miss: just return — next_pc was already stored */
+    uint32_t miss_target = emit_pos(e);
+    emit_patch_cond19(e, bne_off, miss_target);
     emit_ret(e);
 }
 
@@ -753,25 +820,26 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 emit_mov_w32_imm32(&e, A_S2, pc + 4);
                 store_gpr(&e, insn.rd, A_S2);
             }
-            exit_with_pc(&e, (uint32_t)(pc + insn.imm));
+            chained_exit_known(&e, (uint32_t)(pc + insn.imm));
             goto done;
         }
 
         case OP_JALR: {
             /* target = (rs1 + imm) & ~1; link rd before exit (handles rd==rs1). */
             a64_reg_t rs1 = load_gpr(&e, A_S0, insn.rs1);
-            add_w_imm32(&e, A_S3, rs1, insn.imm);
-            /* Mask LSB. 0xFFFFFFFE is encodable as a logical immediate. */
-            if (!emit_and_w32_imm(&e, A_S3, A_S3, 0xFFFFFFFEu)) {
-                /* Should not happen; defensive fallback. */
+            /* Use a register that doesn't clobber the chained-exit scratches.
+             * The chained_exit_indirect helper consumes A_S0..A_S3, so we
+             * stash the target in A64_W14 (free scratch outside the helper). */
+            add_w_imm32(&e, A64_W14, rs1, insn.imm);
+            if (!emit_and_w32_imm(&e, A64_W14, A64_W14, 0xFFFFFFFEu)) {
                 emit_mov_w32_imm32(&e, A_S1, 0xFFFFFFFEu);
-                emit_and_w32(&e, A_S3, A_S3, A_S1);
+                emit_and_w32(&e, A64_W14, A64_W14, A_S1);
             }
             if (insn.rd != 0) {
                 emit_mov_w32_imm32(&e, A_S2, pc + 4);
                 store_gpr(&e, insn.rd, A_S2);
             }
-            exit_with_w(&e, A_S3);
+            chained_exit_indirect(&e, A64_W14);
             goto done;
         }
 
@@ -791,12 +859,12 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             }
             uint32_t bcond_off = emit_pos(&e);
             emit_b_cond(&e, cond, 0);                /* patched */
-            /* Fall-through (not taken): exit with pc + 4 */
-            exit_with_pc(&e, pc + 4);
+            /* Fall-through (not taken): chained exit at pc + 4 */
+            chained_exit_known(&e, pc + 4);
             uint32_t taken_off = emit_pos(&e);
             emit_patch_cond19(&e, bcond_off, taken_off);
-            /* Taken: exit with pc + imm */
-            exit_with_pc(&e, (uint32_t)(pc + insn.imm));
+            /* Taken: chained exit at pc + imm */
+            chained_exit_known(&e, (uint32_t)(pc + insn.imm));
             goto done;
         }
 
@@ -839,8 +907,9 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
     }
 
     /* Hit MAX_BLOCK_INSNS without seeing a control-flow instruction.
-     * Exit at the next pc and let the dispatcher pick up. */
-    exit_with_pc(&e, pc);
+     * Chain straight to the next pc — long straight-line code is common
+     * in compiler-generated initialisers. */
+    chained_exit_known(&e, pc);
 
 done:
     dbt->code_used += e.offset;
