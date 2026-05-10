@@ -26,6 +26,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* Host libc functions used by the intrinsic native stubs below. */
+extern void *memcpy(void *, const void *, size_t);
+extern void *memmove(void *, const void *, size_t);
+extern void *memset(void *, int, size_t);
+extern size_t strlen(const char *);
 
 /* Max guest instructions per translated block — same as x86 backend. */
 #define MAX_BLOCK_INSNS  64
@@ -787,7 +792,122 @@ static int translate_one(emit_t *e, rv32_insn_t *insn, uint32_t pc) {
  * emits the appropriate exit at every block boundary. The exit always
  * RETs back into the trampoline.
  */
+
+/* ---- Intrinsic native stubs ----
+ *
+ * When the guest binary's symbol table tells us where memcpy/memmove/
+ * memset/strlen live, we replace the *entire* compiled implementation
+ * with a tiny stub that converts the guest argument addresses to host
+ * pointers and BLRs to libc. The stub returns through the guest's
+ * link register (x[1]) via the indirect-cache probe, so subsequent
+ * iterations chain straight to the caller's continuation.
+ *
+ * The pattern (8-12 host instructions vs. dozens-to-hundreds in the
+ * guest's compiled libc) is a large win for memory-heavy workloads.
+ */
+
+static uint8_t *emit_memcpy_stub(dbt_state_t *dbt, int is_memmove) {
+    emit_t e = { .buf = dbt->code_buf + dbt->code_used,
+                 .offset = 0,
+                 .capacity = CODE_BUF_SIZE - dbt->code_used };
+    uint8_t *block_start = e.buf;
+
+    /* Save LR (and pad with x29 to keep SP 16-aligned). */
+    emit_stp_pre_sp(&e, A64_W29, A64_W30, -16);
+
+    /* Load guest a0/a1/a2 = x[10], x[11], x[12] into host arg regs. */
+    emit_ldr_w32_imm(&e, A64_W0, A_CTX, 10 * 4);
+    emit_ldr_w32_imm(&e, A64_W1, A_CTX, 11 * 4);
+    emit_ldr_w32_imm(&e, A64_W2, A_CTX, 12 * 4);
+
+    /* Convert dest and src to host pointers: X = mem_base + zero-extend(W). */
+    emit_add_x64_w32_uxtw(&e, A64_W0, A_MEM, A64_W0);
+    emit_add_x64_w32_uxtw(&e, A64_W1, A_MEM, A64_W1);
+
+    /* Materialize host fn pointer and call. */
+    void *fn = is_memmove ? (void *)memmove : (void *)memcpy;
+    emit_mov_x64_imm64(&e, A64_W9, (uint64_t)(uintptr_t)fn);
+    emit_blr(&e, A64_W9);
+
+    /* Restore LR; ctx->x[10] is unchanged (memcpy returns dest, which == guest a0). */
+    emit_ldp_post_sp(&e, A64_W29, A64_W30, 16);
+
+    /* Return via ra (x[1]) using the indirect chained exit. */
+    emit_ldr_w32_imm(&e, A64_W14, A_CTX, 1 * 4);
+    chained_exit_indirect(&e, A64_W14);
+
+    dbt->code_used += e.offset;
+    dbt->blocks_translated++;
+    __builtin___clear_cache((char *)block_start, (char *)block_start + e.offset);
+    return block_start;
+}
+
+static uint8_t *emit_memset_stub(dbt_state_t *dbt) {
+    emit_t e = { .buf = dbt->code_buf + dbt->code_used,
+                 .offset = 0,
+                 .capacity = CODE_BUF_SIZE - dbt->code_used };
+    uint8_t *block_start = e.buf;
+
+    emit_stp_pre_sp(&e, A64_W29, A64_W30, -16);
+
+    emit_ldr_w32_imm(&e, A64_W0, A_CTX, 10 * 4);   /* a0 = ptr */
+    emit_ldr_w32_imm(&e, A64_W1, A_CTX, 11 * 4);   /* a1 = value (int) */
+    emit_ldr_w32_imm(&e, A64_W2, A_CTX, 12 * 4);   /* a2 = len */
+    emit_add_x64_w32_uxtw(&e, A64_W0, A_MEM, A64_W0);
+
+    emit_mov_x64_imm64(&e, A64_W9, (uint64_t)(uintptr_t)memset);
+    emit_blr(&e, A64_W9);
+
+    emit_ldp_post_sp(&e, A64_W29, A64_W30, 16);
+
+    emit_ldr_w32_imm(&e, A64_W14, A_CTX, 1 * 4);
+    chained_exit_indirect(&e, A64_W14);
+
+    dbt->code_used += e.offset;
+    dbt->blocks_translated++;
+    __builtin___clear_cache((char *)block_start, (char *)block_start + e.offset);
+    return block_start;
+}
+
+static uint8_t *emit_strlen_stub(dbt_state_t *dbt) {
+    emit_t e = { .buf = dbt->code_buf + dbt->code_used,
+                 .offset = 0,
+                 .capacity = CODE_BUF_SIZE - dbt->code_used };
+    uint8_t *block_start = e.buf;
+
+    emit_stp_pre_sp(&e, A64_W29, A64_W30, -16);
+
+    emit_ldr_w32_imm(&e, A64_W0, A_CTX, 10 * 4);
+    emit_add_x64_w32_uxtw(&e, A64_W0, A_MEM, A64_W0);
+
+    emit_mov_x64_imm64(&e, A64_W9, (uint64_t)(uintptr_t)strlen);
+    emit_blr(&e, A64_W9);
+
+    /* Result lands in W0 (low 32 of X0). Store back as guest a0 = x[10]. */
+    emit_str_w32_imm(&e, A64_W0, A_CTX, 10 * 4);
+
+    emit_ldp_post_sp(&e, A64_W29, A64_W30, 16);
+
+    emit_ldr_w32_imm(&e, A64_W14, A_CTX, 1 * 4);
+    chained_exit_indirect(&e, A64_W14);
+
+    dbt->code_used += e.offset;
+    dbt->blocks_translated++;
+    __builtin___clear_cache((char *)block_start, (char *)block_start + e.offset);
+    return block_start;
+}
+
 uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
+    /* Intercept intrinsic functions with native stubs */
+    if (dbt->intrinsic_memcpy  && guest_pc == dbt->intrinsic_memcpy)
+        return emit_memcpy_stub(dbt, 0);
+    if (dbt->intrinsic_memmove && guest_pc == dbt->intrinsic_memmove)
+        return emit_memcpy_stub(dbt, 1);
+    if (dbt->intrinsic_memset  && guest_pc == dbt->intrinsic_memset)
+        return emit_memset_stub(dbt);
+    if (dbt->intrinsic_strlen  && guest_pc == dbt->intrinsic_strlen)
+        return emit_strlen_stub(dbt);
+
     /* Conservative "block fits in remaining buffer" check. A worst-case
      * block is ~64 instructions × ~12 host instructions = ~3 KB. */
     if (dbt->code_used + 8192 > CODE_BUF_SIZE) {
