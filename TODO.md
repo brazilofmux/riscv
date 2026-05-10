@@ -5,30 +5,42 @@
 ### Benchmark vs QEMU
 The one remaining checklist item. Now that 7 real programs are ported, we have meaningful workloads to measure. Key metrics: startup time, sustained throughput (Lua benchmarks, dBASE bulk operations), and code size overhead.
 
-### AArch64 host backend (baseline shipped — needs the rest of the optimizations)
-Done: trampoline, full RV32IMFD integer + FP translator (`dbt_a64.c` plus
-`emit_a64.h` instruction emitters), block chaining via inline cache,
-intrinsic native stubs (memcpy/memset/memmove/strlen), LUI/AUIPC + ADDI
+### AArch64 host backend
+Done: trampoline (with D8-D15 save/restore for the FP cache), full
+RV32IMFD integer + FP translator (`dbt_a64.c` plus `emit_a64.h`
+instruction emitters), block chaining via inline cache, intrinsic
+native stubs (memcpy/memset/memmove/strlen plus 20 transcendental
+libm functions: sin/cos/tan/asin/acos/atan/sinh/cosh/tanh/exp/log/
+log10/log2/sqrt/fabs/floor/ceil/pow/atan2/fmod), LUI/AUIPC + ADDI
 fusion, SLT+branch fusion (correct but inert on current GCC output),
-8-slot LRU integer register cache (X22-X28 + X15), superblocks with
-per-side-exit cache snapshots, and self-loop back-edge optimization
-(warm-entry skips cold loads every iteration). All 314 tests pass
-under JIT on aarch64; benchmark_core is ~13x over interpreter
-(~5.3 BIPS, up from 1.5 before the cache); lisp 17-stress is ~11x.
+8-slot LRU integer register cache (X22-X28 + X15), 8-slot LRU FP
+register cache for doubles (D8-D15, with back-edge flush so the
+warm-entry path stays correct), superblocks with per-side-exit
+snapshots for both caches, and self-loop back-edge optimization
+(warm-entry skips int-cache cold loads every iteration). All 314
+tests pass under JIT on aarch64; benchmark_core is ~13x over
+interpreter (~5.3 BIPS, up from 1.5 before the cache); lisp 17-stress
+is ~11x; fp_bench is ~30% faster with the doubles cache; a
+transcendental-heavy microbench is ~8x faster with the libm stubs.
 
 The pattern that emerged across this work: AArch64's chained-exit
 dispatch is so tight (~9 host instructions, very predictable BR
 target) that any optimization which trades register-cache flushing/
-reset for "skip dispatch" comes out negative — RAS and diamond merge
-both regressed on measured workloads. Optimizations that *preserve*
-cache state (superblocks via snapshots, back-edge to warm_entry) are
-the ones that pay off.
+reset for "skip dispatch" comes out negative — RAS, diamond merge,
+and LUI+JALR/LOAD/STORE fusion all regressed on measured workloads.
+Optimizations that *preserve* cache state (superblocks via snapshots,
+back-edge to warm_entry) and ones that replace large guest-side
+software work with a single host call (intrinsic stubs) are the
+ones that pay off.
 
-Still to do, in roughly priority order:
-- **AUIPC+JALR fusion** — direct call to known target, like JAL chained.
-- **AUIPC+load/store fusion** — known address as imm offset.
-- **FP register cache** — the 8 callee-saved D-registers (D8-D15) are
-  unused; a small LRU for FP would help the FP-heavy tests.
+Possible future refinements:
+- **FP self-loop warm-entry**: pre-load FP regs at warm_entry like
+  the int cache does, so the back-edge can skip the FP flush. None
+  of our current benchmarks would clear the eligibility check
+  (fp_bench uses 10 distinct FP regs, > 8-slot cache), so this is
+  speculative until a real workload motivates it.
+- **AUIPC+JALR/LOAD/STORE fusion** for x86 parity — measured neutral-
+  to-negative on AArch64, see the "tried and reverted" notes below.
 
 Tried and reverted: **RAS for JALR returns**. A faithful port of the x86
 RAS — push at JAL/JALR with rd=ra, pop+compare at JALR ret, skip the
@@ -61,6 +73,19 @@ itself only ~9 host instructions). Same root cause as the RAS regression
 state across the body (e.g. by translating the body without going
 through the cache, or by a more careful liveness analysis) might be
 profitable but is significantly more complex.
+
+Tried and reverted: **LUI/AUIPC + JALR/LOAD/STORE fusion**. Pattern
+analysis of the 7 ported binaries showed AUIPC fusion never fires (0
+patterns — modern GCC for static binaries uses LUI), LUI+JALR fires
+0 times, and LUI+LOAD/STORE fires moderately (94 opportunities in
+lisp, 211 in dbase). A faithful port measured roughly neutral on
+benchmark_core (no LUI patterns there) and ~10% slower on lisp.
+Root cause: AArch64 has no absolute-address load/store like x86's
+`mov reg, [imm32]`, so materializing the absolute address takes
+2 MOVs (movz+movk) which matches the unfused LUI+add cost — and
+we lose the chance to keep the LUI value cached for the next access.
+Same theme as RAS/diamond: AArch64's chained dispatch is too tight
+for a "save dispatch" optimization to pay off.
 
 ### Register cache expansion (x86 side)
 The 8-slot LRU cache (RSI, RDI, R8-R11, R14, R15) is the main translation bottleneck for register-heavy loops on x86-64, which doesn't have more GPRs to spare without going through XMM.
