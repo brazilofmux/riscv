@@ -45,6 +45,38 @@ double difftime(time_t t1, time_t t0) {
     return (double)(t1 - t0);
 }
 
+int clock_gettime(int clock_id, struct timespec *ts) {
+    if (!ts) return -1;
+    /* CLOCK_REALTIME and CLOCK_MONOTONIC both go through ECALL 403; the
+     * host returns wall-clock seconds + nanoseconds. */
+    struct { int tv_sec; int tv_nsec; } raw;
+    int rc = _clock_gettime(clock_id == 0 ? 0 : 1, &raw);
+    if (rc < 0) return rc;
+    ts->tv_sec  = (time_t)raw.tv_sec;
+    ts->tv_nsec = (long)raw.tv_nsec;
+    return 0;
+}
+
+#include <sys/time.h>
+int gettimeofday(struct timeval *tv, void *tz) {
+    (void)tz;
+    if (!tv) return -1;
+    struct timespec ts;
+    if (clock_gettime(0, &ts) < 0) return -1;
+    tv->tv_sec  = (long)ts.tv_sec;
+    tv->tv_usec = (long)(ts.tv_nsec / 1000L);
+    return 0;
+}
+
+int nanosleep(const struct timespec *req, struct timespec *rem) {
+    /* No host nanosleep ECALL — return immediately, claim full sleep
+     * happened. Programs that depend on real timing will diverge from
+     * wall-clock but won't deadlock. */
+    (void)req;
+    if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
+    return 0;
+}
+
 struct tm *gmtime(const time_t *timep) {
     time_t t = *timep;
     int days, rem;
@@ -229,6 +261,33 @@ size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm) {
     return (size_t)(p - s);
 }
 
+/* asctime / ctime — fixed-format time string in a static buffer. */
+static char _ascbuf[32];
+
+static const char *_asc_day[]  = { "Sun","Mon","Tue","Wed","Thu","Fri","Sat" };
+static const char *_asc_mon[]  = { "Jan","Feb","Mar","Apr","May","Jun",
+                                   "Jul","Aug","Sep","Oct","Nov","Dec" };
+
+char *asctime(const struct tm *tm) {
+    if (!tm) return NULL;
+    int wday = tm->tm_wday & 7;
+    int mon  = tm->tm_mon  & 15;
+    if (wday > 6) wday = 0;
+    if (mon  > 11) mon  = 0;
+    /* "Wed Jun 30 21:49:08 1993\n" — exactly 25 chars + NUL. */
+    snprintf(_ascbuf, sizeof(_ascbuf), "%s %s %2d %02d:%02d:%02d %d\n",
+             _asc_day[wday], _asc_mon[mon], tm->tm_mday,
+             tm->tm_hour, tm->tm_min, tm->tm_sec, tm->tm_year + 1900);
+    return _ascbuf;
+}
+
+char *ctime(const time_t *timep) {
+    if (!timep) return NULL;
+    struct tm *tm = localtime(timep);
+    if (!tm) return NULL;
+    return asctime(tm);
+}
+
 /* Stub locale functions needed by Lua's loslib.c */
 static struct {
     char decimal_point[2];
@@ -248,11 +307,4 @@ struct lconv *localeconv(void) {
     return &_lconv;
 }
 
-/* Stub signal function — no signal support on bare metal */
-#include <signal.h>
-
-sighandler_t signal(int signum, sighandler_t handler) {
-    (void)signum;
-    (void)handler;
-    return SIG_DFL;
-}
+/* signal() and the rest of the signal stubs live in src/stubs.c. */

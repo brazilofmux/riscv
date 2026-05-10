@@ -30,10 +30,19 @@
 #define PATH_MAX    4096
 #define NAME_MAX    255
 #define OPEN_MAX    256
+#define ARG_MAX     131072
 
 #define WORD_BIT    32
 #define LONG_BIT    32
+#ifndef SIZE_MAX
 #define SIZE_MAX    UINT_MAX
+#endif
 #define SSIZE_MAX   INT_MAX
+#ifndef PTRDIFF_MIN
+#define PTRDIFF_MIN INT_MIN
+#endif
+#ifndef PTRDIFF_MAX
+#define PTRDIFF_MAX INT_MAX
+#endif
 
 #endif
