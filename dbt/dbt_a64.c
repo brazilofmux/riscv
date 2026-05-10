@@ -52,6 +52,11 @@
 #define A_S2     A64_W11
 #define A_S3     A64_W12
 
+/* Byte offset of guest f[fp_reg] inside rv32_ctx_t. Defined here (rather
+ * than in the FP helpers section below) because the FP register cache
+ * and the side-exit snapshot helpers reference it. */
+#define FP_OFF(fp_reg) ((uint32_t)(CTX_FP_OFF + (fp_reg) * 8))
+
 int dbt_jit_available(void) { return 1; }
 
 /* ---- Register cache ----
@@ -172,13 +177,123 @@ static void rc_flush_snapshot(emit_t *e, const rc_slot_t *snapshot) {
                              (uint32_t)(snapshot[i].guest_reg * 4));
 }
 
+/* ---- FP register cache ----
+ *
+ * Eight LRU slots indexed to D8..D15 (callee-saved on AAPCS64 — the
+ * trampoline saves/restores them so blocks can use them freely across
+ * the back-and-forth into dbt_run()).
+ *
+ * The cache is DOUBLES-ONLY. Single-precision ops (FLW/FSW/FADD.S/
+ * FCVT.W.S/FCVT.S.W/FMV.X.W/FMV.W.X) bypass it: they evict any cached
+ * slot for the relevant fp_regs (flushing dirty values back to ctx)
+ * and then operate on ctx directly. The cache thus stays type-coherent
+ * — a slot always holds a 64-bit double, properly stored to ctx as
+ * a double on flush — and we don't have to track NaN-boxing inside
+ * cache slots. */
+
+#define FP_NUM_SLOTS 8
+#define FP_FIRST_DREG 8   /* D8..D15 */
+
+typedef struct {
+    int fp_reg;     /* -1 = free; otherwise guest f-register number */
+    int dirty;
+    int last_use;
+} fp_slot_t;
+
+typedef struct {
+    fp_slot_t slots[FP_NUM_SLOTS];
+    int clock;
+} fp_cache_t;
+
+static int fp_slot_d(int slot) { return FP_FIRST_DREG + slot; }
+
+static void fp_rc_init(fp_cache_t *fc) {
+    for (int i = 0; i < FP_NUM_SLOTS; i++) {
+        fc->slots[i].fp_reg = -1;
+        fc->slots[i].dirty = 0;
+        fc->slots[i].last_use = 0;
+    }
+    fc->clock = 0;
+}
+
+static int fp_rc_find(fp_cache_t *fc, int fp_reg) {
+    for (int i = 0; i < FP_NUM_SLOTS; i++)
+        if (fc->slots[i].fp_reg == fp_reg) return i;
+    return -1;
+}
+
+static int fp_rc_alloc(fp_cache_t *fc, emit_t *e) {
+    for (int i = 0; i < FP_NUM_SLOTS; i++)
+        if (fc->slots[i].fp_reg == -1) return i;
+    int lru = 0;
+    for (int i = 1; i < FP_NUM_SLOTS; i++)
+        if (fc->slots[i].last_use < fc->slots[lru].last_use) lru = i;
+    if (fc->slots[lru].dirty)
+        emit_str_d_imm(e, fp_slot_d(lru), A_CTX,
+                       FP_OFF(fc->slots[lru].fp_reg));
+    fc->slots[lru].fp_reg = -1;
+    fc->slots[lru].dirty = 0;
+    return lru;
+}
+
+/* Read fp_reg as a double; returns the D register index (8..15). On miss,
+ * loads the full 64 bits from ctx. */
+static int fp_rc_read_d(emit_t *e, fp_cache_t *fc, int fp_reg) {
+    int slot = fp_rc_find(fc, fp_reg);
+    if (slot >= 0) {
+        fc->slots[slot].last_use = ++fc->clock;
+        return fp_slot_d(slot);
+    }
+    slot = fp_rc_alloc(fc, e);
+    int dreg = fp_slot_d(slot);
+    emit_ldr_d_imm(e, dreg, A_CTX, FP_OFF(fp_reg));
+    fc->slots[slot].fp_reg = fp_reg;
+    fc->slots[slot].dirty = 0;
+    fc->slots[slot].last_use = ++fc->clock;
+    return dreg;
+}
+
+/* Allocate a slot to write fp_reg as a double; returns the D register
+ * index. Marks dirty. */
+static int fp_rc_write_d(emit_t *e, fp_cache_t *fc, int fp_reg) {
+    int slot = fp_rc_find(fc, fp_reg);
+    if (slot < 0) slot = fp_rc_alloc(fc, e);
+    fc->slots[slot].fp_reg = fp_reg;
+    fc->slots[slot].dirty = 1;
+    fc->slots[slot].last_use = ++fc->clock;
+    return fp_slot_d(slot);
+}
+
+/* Evict fp_reg from the cache, flushing if dirty. Used by S-form ops
+ * that need ctx to be coherent before reading via direct-ctx access. */
+static void fp_rc_evict(emit_t *e, fp_cache_t *fc, int fp_reg) {
+    int slot = fp_rc_find(fc, fp_reg);
+    if (slot < 0) return;
+    if (fc->slots[slot].dirty)
+        emit_str_d_imm(e, fp_slot_d(slot), A_CTX, FP_OFF(fp_reg));
+    fc->slots[slot].fp_reg = -1;
+    fc->slots[slot].dirty = 0;
+}
+
+static void fp_rc_flush(emit_t *e, fp_cache_t *fc) {
+    for (int i = 0; i < FP_NUM_SLOTS; i++)
+        if (fc->slots[i].fp_reg >= 0 && fc->slots[i].dirty)
+            emit_str_d_imm(e, fp_slot_d(i), A_CTX, FP_OFF(fc->slots[i].fp_reg));
+}
+
+static void fp_rc_flush_snapshot(emit_t *e, const fp_slot_t *snapshot) {
+    for (int i = 0; i < FP_NUM_SLOTS; i++)
+        if (snapshot[i].fp_reg >= 0 && snapshot[i].dirty)
+            emit_str_d_imm(e, fp_slot_d(i), A_CTX, FP_OFF(snapshot[i].fp_reg));
+}
+
 /* ---- Superblock side exits ----
  *
  * When we hit a forward conditional branch and have buffer/budget left,
  * we treat the TAKEN side as a "side exit" — emit the b.cond unpatched,
- * snapshot the current cache state, and keep translating the fall-through
+ * snapshot both caches' state, and keep translating the fall-through
  * path inside the same block. At end-of-block we emit a cold stub for
- * each side exit: patch the b.cond to land here, replay the snapshot's
+ * each side exit: patch the b.cond to land here, replay both snapshots'
  * dirty writebacks, then chained_exit_known to the original target.
  *
  * The snapshot is necessary because the fall-through path may evict slots
@@ -189,9 +304,10 @@ static void rc_flush_snapshot(emit_t *e, const rc_slot_t *snapshot) {
  * to know which dirty values need to land in ctx before exiting. */
 
 typedef struct {
-    uint32_t bcond_patch;            /* offset of the b.cond to patch */
-    uint32_t target_pc;              /* guest PC for the side exit */
-    rc_slot_t snapshot[RC_NUM_SLOTS];/* cache state at the branch point */
+    uint32_t bcond_patch;             /* offset of the b.cond to patch */
+    uint32_t target_pc;               /* guest PC for the side exit */
+    rc_slot_t  snapshot[RC_NUM_SLOTS];   /* int cache state */
+    fp_slot_t  fp_snapshot[FP_NUM_SLOTS];/* FP cache state */
 } side_exit_t;
 
 #define MAX_SIDE_EXITS 8
@@ -265,21 +381,25 @@ static void cmp_w_imm32_unsigned(emit_t *e, a64_reg_t rn, int32_t imm) {
  *
  * f[0..31] are 64-bit slots in rv32_ctx_t starting at CTX_FP_OFF. Single-
  * precision values are NaN-boxed: lower 4 bytes hold the float bits, upper
- * 4 bytes are 0xFFFFFFFF. Doubles take the full 8 bytes. There is no FP
- * register cache yet — every FP access goes through ctx memory.
+ * 4 bytes are 0xFFFFFFFF. Doubles take the full 8 bytes.
+ *
+ * Doubles are cached in D8..D15 (see fp_cache_t above). Singles bypass
+ * the cache — the helpers below only handle direct ctx access; callers
+ * must fp_rc_evict() the relevant fp_regs first if they may be cached.
  *
  * FP register convention:
- *   D0/D1/D2 = scratch / source / result.
+ *   D0/D1/D2 = scratch / source / result for S-form ops and the few
+ *              D-form helpers (FCVT, FCMP) that compute into a fixed
+ *              register before storing into the cache slot.
  */
-#define FP_OFF(fp_reg) ((uint32_t)(CTX_FP_OFF + (fp_reg) * 8))
+
+/* Single-precision direct-ctx helpers. The cache is doubles-only;
+ * single-precision ops bypass it (callers fp_rc_evict the relevant
+ * fp_regs first so ctx is coherent). */
 
 static void load_fp_s(emit_t *e, int sd, int f) {
     /* LDR Sd, [X19, fp_off]  — loads lower 4 bytes; upper of D auto-zeros. */
     emit_ldr_s_imm(e, sd, A_CTX, FP_OFF(f));
-}
-
-static void load_fp_d(emit_t *e, int dd, int f) {
-    emit_ldr_d_imm(e, dd, A_CTX, FP_OFF(f));
 }
 
 static void store_fp_s(emit_t *e, int f, int sd) {
@@ -289,10 +409,6 @@ static void store_fp_s(emit_t *e, int f, int sd) {
     emit_str_s_imm(e, sd, A_CTX, FP_OFF(f));
     emit_movn_w32(e, A_S0, 0, 0);   /* W9 = 0xFFFFFFFF */
     emit_str_w32_imm(e, A_S0, A_CTX, FP_OFF(f) + 4);
-}
-
-static void store_fp_d(emit_t *e, int f, int dd) {
-    emit_str_d_imm(e, dd, A_CTX, FP_OFF(f));
 }
 
 /* Tail of every block exit: store next_pc, return to dispatcher. Caller
@@ -375,7 +491,7 @@ static void chained_exit_indirect(emit_t *e, a64_reg_t pc_w) {
  * the block. translate_one only deals with straight-line ops and is
  * responsible for keeping the register cache state coherent.
  */
-static int translate_one(emit_t *e, reg_cache_t *rc,
+static int translate_one(emit_t *e, reg_cache_t *rc, fp_cache_t *fc,
                          rv32_insn_t *insn, uint32_t pc) {
     switch (insn->opcode) {
 
@@ -622,9 +738,10 @@ static int translate_one(emit_t *e, reg_cache_t *rc,
             addr = A_S3;
         }
         if (insn->funct3 == 3) {
-            emit_ldr_d_reg_uxtw(e, /*D0*/ 0, A_MEM, addr);
-            store_fp_d(e, insn->rd, 0);
+            int dreg = fp_rc_write_d(e, fc, insn->rd);
+            emit_ldr_d_reg_uxtw(e, dreg, A_MEM, addr);
         } else {
+            fp_rc_evict(e, fc, insn->rd);
             emit_ldr_s_reg_uxtw(e, /*S0*/ 0, A_MEM, addr);
             store_fp_s(e, insn->rd, 0);
         }
@@ -641,9 +758,10 @@ static int translate_one(emit_t *e, reg_cache_t *rc,
             addr = A_S3;
         }
         if (insn->funct3 == 3) {
-            load_fp_d(e, /*D0*/ 0, insn->rs2);
-            emit_str_d_reg_uxtw(e, 0, A_MEM, addr);
+            int dreg = fp_rc_read_d(e, fc, insn->rs2);
+            emit_str_d_reg_uxtw(e, dreg, A_MEM, addr);
         } else {
+            fp_rc_evict(e, fc, insn->rs2);
             load_fp_s(e, /*S0*/ 0, insn->rs2);
             emit_str_s_reg_uxtw(e, 0, A_MEM, addr);
         }
@@ -651,56 +769,73 @@ static int translate_one(emit_t *e, reg_cache_t *rc,
     }
 
     /* RV → AArch64 FMA mnemonic mapping (signs differ — see emit_a64.h
-     * comment block). FP registers don't go through the int cache. */
+     * comment block). D-form variants use the FP cache; S-form falls
+     * through to direct ctx access (cache must be evicted first). */
     case OP_FMADD: { /* RV: rd = rs1*rs2 + rs3  →  AArch64 FMADD */
         int fmt = insn->funct7 & 3;
         if (fmt == 0) {
+            fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+            fp_rc_evict(e, fc, insn->rs3); fp_rc_evict(e, fc, insn->rd);
             load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2); load_fp_s(e, 2, insn->rs3);
             emit_fmadd_s(e, 2, 0, 1, 2);
             store_fp_s(e, insn->rd, 2);
         } else {
-            load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2); load_fp_d(e, 2, insn->rs3);
-            emit_fmadd_d(e, 2, 0, 1, 2);
-            store_fp_d(e, insn->rd, 2);
+            int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+            int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+            int rs3 = fp_rc_read_d(e, fc, insn->rs3);
+            int rd  = fp_rc_write_d(e, fc, insn->rd);
+            emit_fmadd_d(e, rd, rs1, rs2, rs3);
         }
         return 0;
     }
     case OP_FMSUB: { /* RV: rd = rs1*rs2 - rs3  →  AArch64 FNMSUB (Sn*Sm - Sa) */
         int fmt = insn->funct7 & 3;
         if (fmt == 0) {
+            fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+            fp_rc_evict(e, fc, insn->rs3); fp_rc_evict(e, fc, insn->rd);
             load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2); load_fp_s(e, 2, insn->rs3);
             emit_fnmsub_s(e, 2, 0, 1, 2);
             store_fp_s(e, insn->rd, 2);
         } else {
-            load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2); load_fp_d(e, 2, insn->rs3);
-            emit_fnmsub_d(e, 2, 0, 1, 2);
-            store_fp_d(e, insn->rd, 2);
+            int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+            int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+            int rs3 = fp_rc_read_d(e, fc, insn->rs3);
+            int rd  = fp_rc_write_d(e, fc, insn->rd);
+            emit_fnmsub_d(e, rd, rs1, rs2, rs3);
         }
         return 0;
     }
     case OP_FNMSUB: { /* RV: rd = -(rs1*rs2) + rs3  →  AArch64 FMSUB (Sa - Sn*Sm) */
         int fmt = insn->funct7 & 3;
         if (fmt == 0) {
+            fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+            fp_rc_evict(e, fc, insn->rs3); fp_rc_evict(e, fc, insn->rd);
             load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2); load_fp_s(e, 2, insn->rs3);
             emit_fmsub_s(e, 2, 0, 1, 2);
             store_fp_s(e, insn->rd, 2);
         } else {
-            load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2); load_fp_d(e, 2, insn->rs3);
-            emit_fmsub_d(e, 2, 0, 1, 2);
-            store_fp_d(e, insn->rd, 2);
+            int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+            int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+            int rs3 = fp_rc_read_d(e, fc, insn->rs3);
+            int rd  = fp_rc_write_d(e, fc, insn->rd);
+            emit_fmsub_d(e, rd, rs1, rs2, rs3);
         }
         return 0;
     }
     case OP_FNMADD: { /* RV: rd = -(rs1*rs2) - rs3  →  AArch64 FNMADD */
         int fmt = insn->funct7 & 3;
         if (fmt == 0) {
+            fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+            fp_rc_evict(e, fc, insn->rs3); fp_rc_evict(e, fc, insn->rd);
             load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2); load_fp_s(e, 2, insn->rs3);
             emit_fnmadd_s(e, 2, 0, 1, 2);
             store_fp_s(e, insn->rd, 2);
         } else {
-            load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2); load_fp_d(e, 2, insn->rs3);
-            emit_fnmadd_d(e, 2, 0, 1, 2);
-            store_fp_d(e, insn->rd, 2);
+            int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+            int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+            int rs3 = fp_rc_read_d(e, fc, insn->rs3);
+            int rd  = fp_rc_write_d(e, fc, insn->rd);
+            emit_fnmadd_d(e, rd, rs1, rs2, rs3);
         }
         return 0;
     }
@@ -709,64 +844,88 @@ static int translate_one(emit_t *e, reg_cache_t *rc,
         int funct5 = insn->funct7 >> 2;
         int fmt    = insn->funct7 & 3;        /* 0=S, 1=D */
 
+        /* The S-form (fmt==0) sub-cases below all bypass the FP cache —
+         * they must evict any cached slot for rd/rs1/rs2 (whichever they
+         * touch) so that direct ctx access sees coherent values. The
+         * D-form (fmt==1) sub-cases use fp_rc_read_d/write_d. */
+
         switch (funct5) {
         case 0x00: /* FADD */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+                fp_rc_evict(e, fc, insn->rd);
                 load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
                 emit_fadd_s(e, 2, 0, 1);
                 store_fp_s(e, insn->rd, 2);
             } else {
-                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
-                emit_fadd_d(e, 2, 0, 1);
-                store_fp_d(e, insn->rd, 2);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                emit_fadd_d(e, rd, rs1, rs2);
             }
             return 0;
         case 0x01: /* FSUB */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+                fp_rc_evict(e, fc, insn->rd);
                 load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
                 emit_fsub_s(e, 2, 0, 1);
                 store_fp_s(e, insn->rd, 2);
             } else {
-                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
-                emit_fsub_d(e, 2, 0, 1);
-                store_fp_d(e, insn->rd, 2);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                emit_fsub_d(e, rd, rs1, rs2);
             }
             return 0;
         case 0x02: /* FMUL */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+                fp_rc_evict(e, fc, insn->rd);
                 load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
                 emit_fmul_s(e, 2, 0, 1);
                 store_fp_s(e, insn->rd, 2);
             } else {
-                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
-                emit_fmul_d(e, 2, 0, 1);
-                store_fp_d(e, insn->rd, 2);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                emit_fmul_d(e, rd, rs1, rs2);
             }
             return 0;
         case 0x03: /* FDIV */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+                fp_rc_evict(e, fc, insn->rd);
                 load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
                 emit_fdiv_s(e, 2, 0, 1);
                 store_fp_s(e, insn->rd, 2);
             } else {
-                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
-                emit_fdiv_d(e, 2, 0, 1);
-                store_fp_d(e, insn->rd, 2);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                emit_fdiv_d(e, rd, rs1, rs2);
             }
             return 0;
         case 0x0B: /* FSQRT */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rd);
                 load_fp_s(e, 0, insn->rs1);
                 emit_fsqrt_s(e, 2, 0);
                 store_fp_s(e, insn->rd, 2);
             } else {
-                load_fp_d(e, 0, insn->rs1);
-                emit_fsqrt_d(e, 2, 0);
-                store_fp_d(e, insn->rd, 2);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                emit_fsqrt_d(e, rd, rs1);
             }
             return 0;
 
         case 0x04: { /* FSGNJ / FSGNJN / FSGNJX */
+            /* This sub-case manipulates the raw bit pattern via int
+             * registers reading/writing ctx directly, so we have to
+             * evict any cached FP slots first. */
+            fp_rc_evict(e, fc, insn->rs1);
+            fp_rc_evict(e, fc, insn->rs2);
+            fp_rc_evict(e, fc, insn->rd);
             uint32_t off1 = FP_OFF(insn->rs1);
             uint32_t off2 = FP_OFF(insn->rs2);
             uint32_t offd = FP_OFF(insn->rd);
@@ -815,25 +974,30 @@ static int translate_one(emit_t *e, reg_cache_t *rc,
 
         case 0x05: /* FMIN / FMAX */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
+                fp_rc_evict(e, fc, insn->rd);
                 load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
                 if (insn->funct3 == 0) emit_fmin_s(e, 2, 0, 1);
                 else                    emit_fmax_s(e, 2, 0, 1);
                 store_fp_s(e, insn->rd, 2);
             } else {
-                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
-                if (insn->funct3 == 0) emit_fmin_d(e, 2, 0, 1);
-                else                    emit_fmax_d(e, 2, 0, 1);
-                store_fp_d(e, insn->rd, 2);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+                int rd  = fp_rc_write_d(e, fc, insn->rd);
+                if (insn->funct3 == 0) emit_fmin_d(e, rd, rs1, rs2);
+                else                    emit_fmax_d(e, rd, rs1, rs2);
             }
             return 0;
 
         case 0x14: { /* FEQ / FLT / FLE → integer rd */
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1); fp_rc_evict(e, fc, insn->rs2);
                 load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
                 emit_fcmp_s(e, 0, 1);
             } else {
-                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
-                emit_fcmp_d(e, 0, 1);
+                int rs1 = fp_rc_read_d(e, fc, insn->rs1);
+                int rs2 = fp_rc_read_d(e, fc, insn->rs2);
+                emit_fcmp_d(e, rs1, rs2);
             }
             a64_cond_t cond;
             switch (insn->funct3) {
@@ -848,15 +1012,17 @@ static int translate_one(emit_t *e, reg_cache_t *rc,
         }
 
         case 0x18: { /* FCVT.W.S / FCVT.WU.S / FCVT.W.D / FCVT.WU.D */
-            a64_reg_t rd = rc_write(e, rc, insn->rd);
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rs1);
                 load_fp_s(e, 0, insn->rs1);
+                a64_reg_t rd = rc_write(e, rc, insn->rd);
                 if (insn->rs2 == 0) emit_fcvtzs_w32_s(e, rd, 0);
                 else                emit_fcvtzu_w32_s(e, rd, 0);
             } else {
-                load_fp_d(e, 0, insn->rs1);
-                if (insn->rs2 == 0) emit_fcvtzs_w32_d(e, rd, 0);
-                else                emit_fcvtzu_w32_d(e, rd, 0);
+                int src = fp_rc_read_d(e, fc, insn->rs1);
+                a64_reg_t rd = rc_write(e, rc, insn->rd);
+                if (insn->rs2 == 0) emit_fcvtzs_w32_d(e, rd, src);
+                else                emit_fcvtzu_w32_d(e, rd, src);
             }
             return 0;
         }
@@ -864,13 +1030,14 @@ static int translate_one(emit_t *e, reg_cache_t *rc,
         case 0x1A: { /* FCVT.S.W / FCVT.S.WU / FCVT.D.W / FCVT.D.WU */
             a64_reg_t rs1 = rc_read(e, rc, insn->rs1);
             if (fmt == 0) {
+                fp_rc_evict(e, fc, insn->rd);
                 if (insn->rs2 == 0) emit_scvtf_s_w32(e, 2, rs1);
                 else                emit_ucvtf_s_w32(e, 2, rs1);
                 store_fp_s(e, insn->rd, 2);
             } else {
-                if (insn->rs2 == 0) emit_scvtf_d_w32(e, 2, rs1);
-                else                emit_ucvtf_d_w32(e, 2, rs1);
-                store_fp_d(e, insn->rd, 2);
+                int rd = fp_rc_write_d(e, fc, insn->rd);
+                if (insn->rs2 == 0) emit_scvtf_d_w32(e, rd, rs1);
+                else                emit_ucvtf_d_w32(e, rd, rs1);
             }
             return 0;
         }
@@ -878,18 +1045,21 @@ static int translate_one(emit_t *e, reg_cache_t *rc,
         case 0x08: /* FCVT.S.D (single-from-double) when fmt==0;
                     * FCVT.D.S (double-from-single) when fmt==1 */
             if (fmt == 0) {
-                load_fp_d(e, 0, insn->rs1);
-                emit_fcvt_s_d(e, 2, 0);
+                int src = fp_rc_read_d(e, fc, insn->rs1);
+                fp_rc_evict(e, fc, insn->rd);
+                emit_fcvt_s_d(e, 2, src);
                 store_fp_s(e, insn->rd, 2);
             } else {
+                fp_rc_evict(e, fc, insn->rs1);
                 load_fp_s(e, 0, insn->rs1);
-                emit_fcvt_d_s(e, 2, 0);
-                store_fp_d(e, insn->rd, 2);
+                int rd = fp_rc_write_d(e, fc, insn->rd);
+                emit_fcvt_d_s(e, rd, 0);
             }
             return 0;
 
         case 0x1C: /* FMV.X.W (fmt=0, funct3=0) — bitcast f[rs1] low 32 to int */
             if (fmt == 0 && insn->funct3 == 0) {
+                fp_rc_evict(e, fc, insn->rs1);
                 a64_reg_t rd = rc_write(e, rc, insn->rd);
                 emit_ldr_w32_imm(e, rd, A_CTX, FP_OFF(insn->rs1));
                 return 0;
@@ -899,6 +1069,7 @@ static int translate_one(emit_t *e, reg_cache_t *rc,
         case 0x1E: /* FMV.W.X (fmt=0, funct3=0) — bitcast int rs1 → f[rd] (NaN-boxed) */
             if (fmt == 0 && insn->funct3 == 0) {
                 a64_reg_t rs1 = rc_read(e, rc, insn->rs1);
+                fp_rc_evict(e, fc, insn->rd);
                 emit_str_w32_imm(e, rs1, A_CTX, FP_OFF(insn->rd));
                 emit_movn_w32(e, A_S1, 0, 0);
                 emit_str_w32_imm(e, A_S1, A_CTX, FP_OFF(insn->rd) + 4);
@@ -1084,6 +1255,8 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
 
     reg_cache_t rc;
     rc_init(&rc);
+    fp_cache_t  fc;
+    fp_rc_init(&fc);
 
     side_exit_t side_exits[MAX_SIDE_EXITS];
     int num_side_exits = 0;
@@ -1185,6 +1358,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
     for (; insns < MAX_BLOCK_INSNS; insns++) {
         if (pc + 4 > dbt->bin->code_end) {
             rc_flush(&e, &rc);
+            fp_rc_flush(&e, &fc);
             exit_with_pc(&e, pc | 2u);
             goto done;
         }
@@ -1284,6 +1458,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 emit_mov_w32_imm32(&e, rd, pc + 4);
             }
             rc_flush(&e, &rc);
+            fp_rc_flush(&e, &fc);
             chained_exit_known(&e, (uint32_t)(pc + insn.imm));
             goto done;
         }
@@ -1303,6 +1478,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 emit_mov_w32_imm32(&e, rd, pc + 4);
             }
             rc_flush(&e, &rc);
+            fp_rc_flush(&e, &fc);
             chained_exit_indirect(&e, A64_W14);
             goto done;
         }
@@ -1323,6 +1499,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             case BR_BGEU: branch_cond = A64_COND_HS; break;
             default:
                 rc_flush(&e, &rc);
+                fp_rc_flush(&e, &fc);
                 exit_with_pc(&e, pc | 2u);
                 goto done;
             }
@@ -1340,6 +1517,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
              * advance, returning 0 to rd. */
             if (insn.funct3 == 0) {
                 rc_flush(&e, &rc);
+                fp_rc_flush(&e, &fc);
                 uint32_t advanced = pc + 4;
                 if (insn.imm == 1)
                     exit_with_pc(&e, advanced | 2u);
@@ -1357,12 +1535,13 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
         }
 
         default: {
-            int rc_status = translate_one(&e, &rc, &insn, pc);
+            int rc_status = translate_one(&e, &rc, &fc, &insn, pc);
             if (rc_status != 0) {
                 /* Unhandled opcode (e.g. an FP form we don't translate
                  * yet). Bail out: signal EBREAK so the user sees a clear
                  * "JIT can't handle this" message. */
                 rc_flush(&e, &rc);
+                fp_rc_flush(&e, &fc);
                 exit_with_pc(&e, pc | 2u);
                 goto done;
             }
@@ -1393,6 +1572,21 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
          * The flush only fires on the loop-exit path so ctx is coherent
          * for code outside the loop. */
         if (self_loop && branch_taken_pc == guest_pc) {
+            /* The int cache is preserved across iterations by the
+             * eligibility check (no eviction during body), so the warm
+             * cache mapping stays stable and we don't need to flush
+             * before the back-edge.
+             *
+             * The FP cache is different: it isn't pre-loaded at
+             * warm_entry, so the body's first fp_rc_read of each fp_reg
+             * lazily emits an LDR. On iteration 2, that LDR re-runs and
+             * reads ctx — which would see STALE data if we didn't flush
+             * iteration 1's writes back. So we DO flush FP before the
+             * b.cond. Cost: M STR per iteration (for the M dirty FP
+             * regs), but the within-iteration cache hits more than
+             * pay for it on FP-heavy loops. STR doesn't disturb NZCV
+             * so the cmp's flags survive into the b.cond. */
+            fp_rc_flush(&e, &fc);
             uint32_t bp = emit_pos(&e);
             emit_b_cond(&e, branch_cond, 0);
             emit_patch_cond19(&e, bp, warm_entry);
@@ -1407,11 +1601,14 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             side_exits[num_side_exits].target_pc   = branch_taken_pc;
             memcpy(side_exits[num_side_exits].snapshot,
                    rc.slots, sizeof(rc.slots));
+            memcpy(side_exits[num_side_exits].fp_snapshot,
+                   fc.slots, sizeof(fc.slots));
             num_side_exits++;
             continue;
         }
         /* Fallback: end the block with a normal two-target branch. */
         rc_flush(&e, &rc);
+        fp_rc_flush(&e, &fc);
         {
             uint32_t bcond_off = emit_pos(&e);
             emit_b_cond(&e, branch_cond, 0);
@@ -1427,16 +1624,19 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
      * straight to the next pc — long straight-line code is common in
      * compiler-generated initialisers. */
     rc_flush(&e, &rc);
+    fp_rc_flush(&e, &fc);
     chained_exit_known(&e, pc);
 
 done:
     /* Cold stubs for any unfilled side exits. Each stub patches its
-     * b.cond to land here, replays the per-side-exit snapshot's dirty
-     * writebacks (only the dirty slots matter — clean cached values are
-     * already coherent in ctx), then chains to the side-exit target. */
+     * b.cond to land here, replays the per-side-exit snapshots' dirty
+     * writebacks (both int and FP — only the dirty slots matter; clean
+     * cached values are already coherent in ctx), then chains to the
+     * side-exit target. */
     for (int i = 0; i < num_side_exits; i++) {
         emit_patch_cond19(&e, side_exits[i].bcond_patch, emit_pos(&e));
         rc_flush_snapshot(&e, side_exits[i].snapshot);
+        fp_rc_flush_snapshot(&e, side_exits[i].fp_snapshot);
         chained_exit_known(&e, side_exits[i].target_pc);
     }
     if (num_side_exits > 0) {
@@ -1470,20 +1670,30 @@ done:
 void dbt_emit_trampoline(dbt_state_t *dbt) {
     emit_t e = { .buf = dbt->code_buf, .offset = 0, .capacity = CODE_BUF_SIZE };
 
-    /* Frame: 96 bytes (6 × 16-byte pairs).
+    /* Frame: 160 bytes.
      *   [sp+ 0]  x29 (fp), x30 (lr)
      *   [sp+16]  x19, x20  (ctx, mem base)
-     *   [sp+32]  x21, x22  (cache base, cache slot 0)
+     *   [sp+32]  x21, x22  (cache base, int cache slot 0)
      *   [sp+48]  x23, x24
      *   [sp+64]  x25, x26
      *   [sp+80]  x27, x28
+     *   [sp+96]  d8        (FP cache slot 0)   ← AAPCS64 says only the
+     *   [sp+104] d9                              bottom 64 bits of v8..v15
+     *   [sp+112] d10                            are callee-saved, which
+     *   [sp+120] d11                            is exactly the D-view we
+     *   [sp+128] d12                            use as cache slots.
+     *   [sp+136] d13
+     *   [sp+144] d14
+     *   [sp+152] d15
      */
-    emit_stp_pre_sp (&e, A64_W29, A64_W30, -96);
+    emit_stp_pre_sp (&e, A64_W29, A64_W30, -160);
     emit_stp_x64_off(&e, A64_W19, A64_W20, A64_SP, 16);
     emit_stp_x64_off(&e, A64_W21, A64_W22, A64_SP, 32);
     emit_stp_x64_off(&e, A64_W23, A64_W24, A64_SP, 48);
     emit_stp_x64_off(&e, A64_W25, A64_W26, A64_SP, 64);
     emit_stp_x64_off(&e, A64_W27, A64_W28, A64_SP, 80);
+    for (int i = 0; i < FP_NUM_SLOTS; i++)
+        emit_str_d_imm(&e, FP_FIRST_DREG + i, A64_SP, (uint32_t)(96 + i * 8));
 
     /* Load host register convention */
     emit_mov_x64_x64(&e, A64_W19, A64_W0);   /* ctx */
@@ -1495,12 +1705,14 @@ void dbt_emit_trampoline(dbt_state_t *dbt) {
     emit_blr(&e, A64_W2);
 
     /* Unwind */
+    for (int i = FP_NUM_SLOTS - 1; i >= 0; i--)
+        emit_ldr_d_imm(&e, FP_FIRST_DREG + i, A64_SP, (uint32_t)(96 + i * 8));
     emit_ldp_x64_off(&e, A64_W27, A64_W28, A64_SP, 80);
     emit_ldp_x64_off(&e, A64_W25, A64_W26, A64_SP, 64);
     emit_ldp_x64_off(&e, A64_W23, A64_W24, A64_SP, 48);
     emit_ldp_x64_off(&e, A64_W21, A64_W22, A64_SP, 32);
     emit_ldp_x64_off(&e, A64_W19, A64_W20, A64_SP, 16);
-    emit_ldp_post_sp(&e, A64_W29, A64_W30, 96);
+    emit_ldp_post_sp(&e, A64_W29, A64_W30, 160);
     emit_ret(&e);
 
     dbt->code_used = e.offset;
