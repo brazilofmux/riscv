@@ -428,6 +428,11 @@ static void exit_with_pc(emit_t *e, uint32_t next_pc) {
  * pad at +4, native_code at +8.
  *
  * Caller must rc_flush first.
+ *
+ * W^X note (Apple Silicon): the emit_patch_cond19 below writes back into
+ * the just-emitted b.cond. That's W^X-safe because every caller of this
+ * helper is reachable only from dbt_translate_block, which is bracketed
+ * by dbt_jit_writable_begin/end in dbt_run. See the invariant in dbt.h.
  */
 static void chained_exit_known(emit_t *e, uint32_t target_pc) {
     uint32_t hash_off = (uint32_t)(((target_pc >> 2) & BLOCK_CACHE_MASK) * 16u);
@@ -456,7 +461,11 @@ static void chained_exit_known(emit_t *e, uint32_t target_pc) {
 
 /* Chained exit for an INDIRECT target (JALR). Target PC is in `pc_w`
  * (must not be A_S0..A_S3). Always stores next_pc up front so the
- * dispatcher's ecall check works on miss. Caller must rc_flush first. */
+ * dispatcher's ecall check works on miss. Caller must rc_flush first.
+ *
+ * W^X note (Apple Silicon): same as chained_exit_known — the
+ * emit_patch_cond19 below is reachable only via dbt_translate_block,
+ * which is bracketed by the JIT-writable shim. See dbt.h. */
 static void chained_exit_indirect(emit_t *e, a64_reg_t pc_w) {
     emit_str_w32_imm(e, pc_w, A_CTX, CTX_NEXT_PC_OFF);
 
@@ -1589,6 +1598,10 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             fp_rc_flush(&e, &fc);
             uint32_t bp = emit_pos(&e);
             emit_b_cond(&e, branch_cond, 0);
+            /* Patch the b.cond's 19-bit displacement to point at
+             * warm_entry. W^X-safe: we are inside dbt_translate_block,
+             * which is bracketed by dbt_jit_writable_begin/end in
+             * dbt_run (see invariant in dbt.h). */
             emit_patch_cond19(&e, bp, warm_entry);
             rc_flush(&e, &rc);
             chained_exit_known(&e, branch_fall_pc);
@@ -1632,7 +1645,10 @@ done:
      * b.cond to land here, replays the per-side-exit snapshots' dirty
      * writebacks (both int and FP — only the dirty slots matter; clean
      * cached values are already coherent in ctx), then chains to the
-     * side-exit target. */
+     * side-exit target.
+     *
+     * W^X-safe: we are still inside dbt_translate_block, which the
+     * caller (dbt_run) brackets with dbt_jit_writable_begin/end. */
     for (int i = 0; i < num_side_exits; i++) {
         emit_patch_cond19(&e, side_exits[i].bcond_patch, emit_pos(&e));
         rc_flush_snapshot(&e, side_exits[i].snapshot);

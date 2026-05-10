@@ -15,7 +15,30 @@
  * have no such restriction; the helpers compile to no-ops there.
  *
  * Instruction-cache invalidation on AArch64 is handled separately by
- * __builtin___clear_cache calls inside the emitter. */
+ * __builtin___clear_cache calls inside the emitter.
+ *
+ * Invariant
+ * ---------
+ * Every byte ever written to dbt->code_buf MUST happen between a paired
+ * dbt_jit_writable_begin() and dbt_jit_writable_end(). Today there are
+ * exactly two callers that satisfy this:
+ *
+ *   1. dbt_emit_trampoline (called once from dbt_init, bracketed there).
+ *   2. dbt_translate_block (called per-block from dbt_run, bracketed
+ *      there — covers all in-block emission AND in-block patches like
+ *      emit_patch_cond19/emit_patch_b26/emit_patch_rel32 in
+ *      chained_exit_*, the back-edge, the branch fallback, and the
+ *      superblock cold stubs).
+ *
+ * Block chaining in this DBT is via an inline-cache probe (each block's
+ * tail loads dbt->cache[hash] and BRs through it) — we do NOT patch a
+ * previously-emitted block's tail when a new chainee appears. dbt->cache
+ * is a regular C array, not part of code_buf, so cache_insert is W^X-safe.
+ *
+ * If you add a new write site to code_buf — patch-style block chaining,
+ * hot-patching a stub, anything outside dbt_translate_block — you MUST
+ * bracket it with dbt_jit_writable_begin/end or it will fault on
+ * Apple Silicon. */
 #if defined(__APPLE__) && defined(__aarch64__)
 #include <pthread.h>
 #define DBT_JIT_MMAP_FLAGS (MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT)

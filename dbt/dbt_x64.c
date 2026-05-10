@@ -44,6 +44,11 @@ static inline uint32_t cache_hash(uint32_t pc) {
  * miss:
  *   mov dword [rbx + CTX_NEXT_PC_OFF], target_pc
  *   ret
+ *
+ * W^X note (relevant on Apple Silicon AArch64; harmless on x86): all
+ * patch sites in this file are reachable only from dbt_translate_block,
+ * which dbt_run brackets with dbt_jit_writable_begin/end. See dbt.h
+ * for the full invariant.
  */
 static void emit_exit_chained(emit_t *e, uint32_t target_pc) {
     uint32_t offset = cache_hash(target_pc) * 16;
