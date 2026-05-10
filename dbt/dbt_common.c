@@ -27,6 +27,26 @@
 #include <dirent.h>
 #include <errno.h>
 
+/* The guest is compiled with Linux O_* bit values (see runtime/include/
+ * fcntl.h). On Linux hosts these match the kernel's; on macOS they
+ * don't (e.g. O_CREAT is 0x40 on Linux but 0x200 on macOS). Translate
+ * before forwarding to the host openat(). */
+#define G_O_CREAT     0x0040
+#define G_O_EXCL      0x0080
+#define G_O_TRUNC     0x0200
+#define G_O_APPEND    0x0400
+#define G_O_NONBLOCK  0x0800
+
+static int translate_open_flags(int guest) {
+    int host = guest & 3;  /* O_RDONLY / O_WRONLY / O_RDWR — same on both. */
+    if (guest & G_O_CREAT)    host |= O_CREAT;
+    if (guest & G_O_EXCL)     host |= O_EXCL;
+    if (guest & G_O_TRUNC)    host |= O_TRUNC;
+    if (guest & G_O_APPEND)   host |= O_APPEND;
+    if (guest & G_O_NONBLOCK) host |= O_NONBLOCK;
+    return host;
+}
+
 /* Host-side directory handle table for the opendir/readdir/closedir
  * ECALLs. Slot index is what the guest sees as a "DIR handle"; the real
  * host DIR* lives here. Single-threaded guests, so no locking. */
@@ -136,7 +156,8 @@ static int handle_ecall(dbt_state_t *dbt) {
                 break;
             }
             const char *pathname = (const char *)(dbt->bin->memory + path_addr);
-            int result = openat(dirfd, pathname, flags, mode);
+            if (dirfd == -100) dirfd = AT_FDCWD;
+            int result = openat(dirfd, pathname, translate_open_flags(flags), mode);
             ctx->x[10] = (uint32_t)(int32_t)result;
         }
         break;
