@@ -1176,6 +1176,57 @@ static uint8_t *emit_memset_stub(dbt_state_t *dbt, uint32_t guest_pc) {
     return code;
 }
 
+/* Generic libm stub: load 1 or 2 doubles from guest fa0/fa1, CALL host
+ * libm function, store the double result back to guest fa0, return via
+ * guest ra. Replaces the guest libc's software Taylor/Newton series
+ * (which expand into hundreds of guest FP ops, each translated as
+ * several host instructions plus ctx round-trips) with a single host
+ * libm call (typically tens of host instructions, hardware-accelerated).
+ *
+ * The guest ABI is ilp32d, so doubles in FP registers map directly to
+ * x86-64 XMM0/XMM1 with no marshalling — we just movsd them. */
+static uint8_t *emit_libm_stub(dbt_state_t *dbt, libm_id_t id) {
+    emit_t e;
+    e.buf = dbt->code_buf + dbt->code_used;
+    e.offset = 0;
+    e.capacity = CODE_BUF_SIZE - dbt->code_used;
+
+    /* Load fa0 = f10 → XMM0; fa1 = f11 → XMM1 if two-arg. */
+    emit_load_fp_d(&e, XMM0, 10);
+    if (libm_table[id].two_arg)
+        emit_load_fp_d(&e, XMM1, 11);
+
+    /* Align stack to 16 (trampoline + ret pushed odd count of 8-byte slots). */
+    emit_byte(&e, rex(1, 0, 0, 0));
+    emit_byte(&e, 0x83);
+    emit_byte(&e, modrm(0x03, 5, X64_RSP));
+    emit_byte(&e, 8);
+
+    /* CALL the host libm function. System V x64 puts double args in
+     * XMM0/XMM1 and the double return in XMM0 — the regs we just loaded. */
+    emit_mov_r64_imm64(&e, X64_RAX, (uint64_t)(uintptr_t)libm_table[id].fn);
+    emit_call_rax(&e);
+
+    /* Restore stack. */
+    emit_byte(&e, rex(1, 0, 0, 0));
+    emit_byte(&e, 0x83);
+    emit_byte(&e, modrm(0x03, 0, X64_RSP));
+    emit_byte(&e, 8);
+
+    /* Store result XMM0 back to guest fa0 (= f10). The full 64 bits go
+     * in — doubles use the entire ctx slot, no NaN-boxing dance. */
+    emit_store_fp_d(&e, 10, XMM0);
+
+    /* Return via ra (x[1]). */
+    emit_load_guest(&e, X64_RAX, 1);
+    emit_exit_ras_return(&e);
+
+    uint8_t *code = dbt->code_buf + dbt->code_used;
+    dbt->code_used += e.offset;
+    dbt->blocks_translated++;
+    return code;
+}
+
 /*
  * Emit a native strlen stub. Loads a0=str, returns length in a0.
  */
@@ -1235,6 +1286,9 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
         return emit_memset_stub(dbt, guest_pc);
     if (dbt->intrinsic_strlen  && guest_pc == dbt->intrinsic_strlen)
         return emit_strlen_stub(dbt, guest_pc);
+    for (int i = 0; i < LIBM_COUNT; i++)
+        if (dbt->intrinsic_libm[i] && guest_pc == dbt->intrinsic_libm[i])
+            return emit_libm_stub(dbt, (libm_id_t)i);
 
     emit_t e;
     e.buf = dbt->code_buf + dbt->code_used;
