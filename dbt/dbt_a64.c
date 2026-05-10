@@ -1052,6 +1052,73 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             }
         }
 
+        /* ---- SLT(I)/SLTU(I) + BEQ/BNE x0 fusion ----
+         * GCC compiles  `if (a < b) goto L`  as  `slt t, a, b; bne t, x0, L`.
+         * The branch's cmp(rd, x0) is redundant — the SLT cmp already set
+         * the right NZCV. Fold to one cmp + b.cond, optionally retaining
+         * the cset for rd if it's live (cset doesn't disturb flags).
+         *
+         * Branch direction maps as:
+         *   BNE rd, x0   (branch if SLT was true)  → COND_LT / COND_LO
+         *   BEQ rd, x0   (branch if SLT was false) → COND_GE / COND_HS
+         */
+        if (((insn.opcode == OP_REG && insn.funct7 == 0
+              && (insn.funct3 == ALU_SLT || insn.funct3 == ALU_SLTU))
+             || (insn.opcode == OP_IMM
+                 && (insn.funct3 == ALU_SLTI || insn.funct3 == ALU_SLTIU)))
+            && insn.rd != 0
+            && pc + 8 <= dbt->bin->code_end) {
+            uint32_t nw;
+            memcpy(&nw, dbt->bin->memory + pc + 4, 4);
+            rv32_insn_t ni;
+            rv32_decode(nw, &ni);
+            if (ni.opcode == OP_BRANCH
+                && (ni.funct3 == BR_BEQ || ni.funct3 == BR_BNE)
+                && ((ni.rs1 == insn.rd && ni.rs2 == 0)
+                    || (ni.rs2 == insn.rd && ni.rs1 == 0))) {
+                int is_signed = (insn.opcode == OP_REG)
+                    ? (insn.funct3 == ALU_SLT)
+                    : (insn.funct3 == ALU_SLTI);
+                uint32_t branch_pc = pc + 4;
+                int32_t branch_imm = ni.imm;
+
+                /* Emit the SLT comparison directly (sets NZCV). */
+                if (insn.opcode == OP_REG) {
+                    a64_reg_t rs1 = rc_read(&e, &rc, insn.rs1);
+                    a64_reg_t rs2 = rc_read(&e, &rc, insn.rs2);
+                    emit_cmp_w32_w32(&e, rs1, rs2);
+                } else {
+                    a64_reg_t rs1 = rc_read(&e, &rc, insn.rs1);
+                    if (is_signed) cmp_w_imm32_signed  (&e, rs1, insn.imm);
+                    else           cmp_w_imm32_unsigned(&e, rs1, insn.imm);
+                }
+
+                /* Materialize the SLT result if anything later in the
+                 * basic block might consume it. We don't do liveness
+                 * analysis, so always emit the cset (one instruction;
+                 * cset doesn't touch NZCV so flags survive into b.cond). */
+                a64_reg_t rd = rc_write(&e, &rc, insn.rd);
+                emit_cset_w32(&e, rd, is_signed ? A64_COND_LT : A64_COND_LO);
+
+                a64_cond_t cond;
+                if (ni.funct3 == BR_BNE)
+                    cond = is_signed ? A64_COND_LT : A64_COND_LO;
+                else /* BR_BEQ */
+                    cond = is_signed ? A64_COND_GE : A64_COND_HS;
+
+                /* Standard branch tail (mirrors the OP_BRANCH case below).
+                 * rc_flush emits STRs only — NZCV survives. */
+                rc_flush(&e, &rc);
+                uint32_t bcond_off = emit_pos(&e);
+                emit_b_cond(&e, cond, 0);
+                chained_exit_known(&e, branch_pc + 4);
+                uint32_t taken_off = emit_pos(&e);
+                emit_patch_cond19(&e, bcond_off, taken_off);
+                chained_exit_known(&e, (uint32_t)(branch_pc + branch_imm));
+                goto done;
+            }
+        }
+
         switch (insn.opcode) {
         case OP_JAL: {
             if (insn.rd != 0) {
