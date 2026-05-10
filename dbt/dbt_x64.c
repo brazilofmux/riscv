@@ -1244,6 +1244,14 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 if (si.rs1) used[si.rs1] = 1;
                 if ((si.opcode == OP_REG || si.opcode == OP_BRANCH || si.opcode == OP_STORE) && si.rs2)
                     used[si.rs2] = 1;
+                /* Also count rd: a destination-only register (e.g. `mv a1, a3`
+                 * where a1 is never read inside the loop body) still needs a
+                 * cache slot. Translating its rc_write evicts a pre-loaded
+                 * slot, breaking the warm_entry invariant on the back-edge. */
+                if ((si.opcode == OP_REG || si.opcode == OP_IMM ||
+                     si.opcode == OP_LOAD || si.opcode == OP_LUI ||
+                     si.opcode == OP_AUIPC) && si.rd)
+                    used[si.rd] = 1;
             }
             if (si.opcode == OP_BRANCH) {
                 uint32_t target = scan_pc + si.imm;
