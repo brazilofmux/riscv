@@ -1054,6 +1054,82 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
     uint32_t   branch_fall_pc  = 0;
     uint32_t   branch_taken_pc = 0;
 
+    /* ---- Self-loop detection / warm entry ----
+     *
+     * If a branch later in this block targets guest_pc itself, the block
+     * is a loop. Pre-load the regs the loop body uses into the cache at
+     * entry, and remember the post-load position as `warm_entry`. The
+     * back-edge then b.conds *to warm_entry* instead of going through
+     * chained-exit, skipping the cold-load sequence on every iteration.
+     *
+     * Eligibility — match the x86 backend's conservative rules so the
+     * runtime cache stays consistent across iterations:
+     *   - Only a strictly linear loop body (no forward branches before
+     *     the back-edge: past_first_branch ⇒ abort). With branches
+     *     splitting the body, the cache state at the back-edge depends
+     *     on which path was taken, and warm_entry can't accommodate
+     *     multiple states.
+     *   - At most RC_NUM_SLOTS distinct registers used in the body.
+     *     Otherwise translation would evict slots and break the
+     *     invariant that "host reg X holds guest reg G" stays stable
+     *     from warm_entry through every iteration. */
+    uint32_t warm_entry = 0;
+    int self_loop = 0;
+    {
+        uint32_t scan_pc = guest_pc;
+        int used[32] = {0};
+        int past_first_branch = 0;
+        int scan_depth = 0;
+        for (int i = 0; i < MAX_BLOCK_INSNS && scan_pc + 4 <= dbt->bin->code_end; i++) {
+            uint32_t w;
+            memcpy(&w, dbt->bin->memory + scan_pc, 4);
+            rv32_insn_t si;
+            rv32_decode(w, &si);
+            if (!past_first_branch) {
+                if (si.rs1) used[si.rs1] = 1;
+                if ((si.opcode == OP_REG || si.opcode == OP_BRANCH || si.opcode == OP_STORE)
+                    && si.rs2)
+                    used[si.rs2] = 1;
+            }
+            if (si.opcode == OP_BRANCH) {
+                uint32_t target = scan_pc + si.imm;
+                if (target == guest_pc) { self_loop = 1; break; }
+                if (si.imm < 0) break;
+                past_first_branch = 1;
+                if (++scan_depth >= MAX_SIDE_EXITS) break;
+                scan_pc += 4;
+                continue;
+            }
+            if (si.opcode == OP_JAL) {
+                if (si.rd != 0) break;  /* call — stop */
+                uint32_t target = scan_pc + si.imm;
+                if (target == guest_pc) { self_loop = 1; break; }
+                if (si.imm > 0 && target + 4 <= dbt->bin->code_end) {
+                    past_first_branch = 1;
+                    if (++scan_depth >= MAX_SIDE_EXITS) break;
+                    scan_pc = target;
+                    continue;
+                }
+                break;
+            }
+            if (si.opcode == OP_JALR || si.opcode == OP_SYSTEM) break;
+            scan_pc += 4;
+        }
+        if (self_loop) {
+            int nused = 0;
+            for (int r = 1; r < 32; r++)
+                if (used[r]) nused++;
+            if (past_first_branch || nused > RC_NUM_SLOTS) self_loop = 0;
+        }
+        if (self_loop) {
+            int loaded = 0;
+            for (int r = 1; r < 32 && loaded < RC_NUM_SLOTS; r++) {
+                if (used[r]) { rc_read(&e, &rc, r); loaded++; }
+            }
+            warm_entry = emit_pos(&e);
+        }
+    }
+
     uint32_t pc = guest_pc;
     int insns = 0;
 
@@ -1252,11 +1328,29 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
          * fusion. Caller has emitted the cmp (NZCV is live) and set:
          *   branch_cond, branch_fall_pc, branch_taken_pc, pc=branch_fall_pc.
          *
-         * Strategy: if there's a side-exit slot left and budget for at
-         * least a few more guest insns, register the taken side as a side
-         * exit and continue translating fall-through. Otherwise emit the
-         * regular two-exit branch ending the block. */
+         * Strategy in priority order:
+         *  1. Self-loop back-edge — b.cond directly to warm_entry, skipping
+         *     the cold-load sequence on every iteration.
+         *  2. Superblock side-exit — register the taken side as a deferred
+         *     exit, continue translating fall-through inline.
+         *  3. Fallback — regular two-exit branch ending the block. */
     emit_branch:
+        /* Self-loop back-edge: jump straight to warm_entry on TAKEN, fall
+         * through to the regular loop-exit chain on NOT-TAKEN. We do NOT
+         * flush before the b.cond — the host registers already hold the
+         * values the next iteration's body wants, and the warm cache
+         * stays consistent across iterations because the eligibility
+         * check above guarantees no eviction happens during the body.
+         * The flush only fires on the loop-exit path so ctx is coherent
+         * for code outside the loop. */
+        if (self_loop && branch_taken_pc == guest_pc) {
+            uint32_t bp = emit_pos(&e);
+            emit_b_cond(&e, branch_cond, 0);
+            emit_patch_cond19(&e, bp, warm_entry);
+            rc_flush(&e, &rc);
+            chained_exit_known(&e, branch_fall_pc);
+            goto done;
+        }
         if (num_side_exits < MAX_SIDE_EXITS && insns < MAX_BLOCK_INSNS - 4) {
             uint32_t bp = emit_pos(&e);
             emit_b_cond(&e, branch_cond, 0);
