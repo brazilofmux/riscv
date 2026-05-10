@@ -934,6 +934,33 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
         rv32_insn_t insn;
         rv32_decode(word, &insn);
 
+        /* ---- LUI / AUIPC + ADDI fusion ----
+         * GCC emits these pairs to materialize 32-bit constants and
+         * absolute addresses. When the second insn's rd matches the
+         * first's rd, the combined value is known at translate time —
+         * one MOV-imm32 instead of two ALU instructions plus a ctx
+         * round-trip. */
+        if ((insn.opcode == OP_LUI || insn.opcode == OP_AUIPC)
+            && insn.rd != 0
+            && pc + 8 <= dbt->bin->code_end) {
+            uint32_t w2;
+            memcpy(&w2, dbt->bin->memory + pc + 4, 4);
+            rv32_insn_t i2;
+            rv32_decode(w2, &i2);
+            if (i2.opcode == OP_IMM
+                && i2.funct3 == ALU_ADDI
+                && i2.rs1 == insn.rd
+                && i2.rd  == insn.rd) {
+                uint32_t base = (insn.opcode == OP_LUI) ? 0u : pc;
+                uint32_t value = base + (uint32_t)insn.imm + (uint32_t)i2.imm;
+                emit_mov_w32_imm32(&e, A_S2, value);
+                store_gpr(&e, insn.rd, A_S2);
+                pc += 8;
+                insns += 1;  /* +1 here, for-loop's post-step adds the other */
+                continue;
+            }
+        }
+
         switch (insn.opcode) {
         case OP_JAL: {
             if (insn.rd != 0) {
