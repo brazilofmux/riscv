@@ -993,6 +993,49 @@ static uint8_t *emit_memset_stub(dbt_state_t *dbt) {
     return block_start;
 }
 
+/* Generic libm stub: load 1 or 2 doubles from guest fa0/fa1, BLR to host
+ * libm function, store the double result back to guest fa0, return via
+ * guest ra. Replaces the guest libc's software Taylor/Newton series
+ * (which expand into hundreds of guest FP ops, each translated as
+ * several host instructions plus ctx round-trips) with a single host
+ * libm call (typically tens of host instructions, hardware-accelerated).
+ *
+ * The guest ABI is ilp32d, so doubles in FP registers map directly to
+ * AArch64 D0/D1 with no marshalling — we just LDR them. */
+static uint8_t *emit_libm_stub(dbt_state_t *dbt, libm_id_t id) {
+    emit_t e = { .buf = dbt->code_buf + dbt->code_used,
+                 .offset = 0,
+                 .capacity = CODE_BUF_SIZE - dbt->code_used };
+    uint8_t *block_start = e.buf;
+
+    emit_stp_pre_sp(&e, A64_W29, A64_W30, -16);
+
+    /* fa0 = f10 → D0; fa1 = f11 → D1 if two-arg. */
+    emit_ldr_d_imm(&e, /*D0*/ 0, A_CTX, FP_OFF(10));
+    if (libm_table[id].two_arg)
+        emit_ldr_d_imm(&e, /*D1*/ 1, A_CTX, FP_OFF(11));
+
+    /* BLR to the host libm function. AAPCS64 puts double args in D0..D1
+     * and the double return in D0 — the same registers we just loaded. */
+    emit_mov_x64_imm64(&e, A64_W9, (uint64_t)(uintptr_t)libm_table[id].fn);
+    emit_blr(&e, A64_W9);
+
+    /* Store result D0 back to guest fa0 (= f10). The full 64 bits go in
+     * — doubles use the entire ctx slot, no NaN-boxing dance. */
+    emit_str_d_imm(&e, /*D0*/ 0, A_CTX, FP_OFF(10));
+
+    emit_ldp_post_sp(&e, A64_W29, A64_W30, 16);
+
+    /* Return via guest ra (x[1]) using the indirect chained exit. */
+    emit_ldr_w32_imm(&e, A64_W14, A_CTX, 1 * 4);
+    chained_exit_indirect(&e, A64_W14);
+
+    dbt->code_used += e.offset;
+    dbt->blocks_translated++;
+    __builtin___clear_cache((char *)block_start, (char *)block_start + e.offset);
+    return block_start;
+}
+
 static uint8_t *emit_strlen_stub(dbt_state_t *dbt) {
     emit_t e = { .buf = dbt->code_buf + dbt->code_used,
                  .offset = 0,
@@ -1030,6 +1073,9 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
         return emit_memset_stub(dbt);
     if (dbt->intrinsic_strlen  && guest_pc == dbt->intrinsic_strlen)
         return emit_strlen_stub(dbt);
+    for (int i = 0; i < LIBM_COUNT; i++)
+        if (dbt->intrinsic_libm[i] && guest_pc == dbt->intrinsic_libm[i])
+            return emit_libm_stub(dbt, (libm_id_t)i);
 
     /* Conservative "block fits in remaining buffer" check. A worst-case
      * block is ~64 instructions × ~12 host instructions = ~3 KB. */

@@ -82,6 +82,10 @@ typedef struct {
     uint32_t intrinsic_memset;
     uint32_t intrinsic_memmove;
     uint32_t intrinsic_strlen;
+    /* libm (transcendental) intrinsics — replaces the guest's software
+     * Taylor/Newton series with a 1-call host libm dispatch. Indexed by
+     * libm_id_t below; 0 = symbol not present in the guest binary. */
+    uint32_t intrinsic_libm[/* LIBM_COUNT */ 20];
 
     /* Debug */
     int trace;
@@ -118,5 +122,30 @@ int      dbt_can_diamond_merge(dbt_state_t *dbt, uint32_t start, uint32_t target
 
 /* Symbol-table lookup, used by dbt_init for intrinsic interception. */
 uint32_t dbt_find_symbol(rv32_binary_t *bin, const char *name);
+
+/* libm intrinsic IDs — must match the order in libm_table[] (dbt_common.c)
+ * and the size of dbt_state_t.intrinsic_libm[]. Each ID names a function
+ * the guest's libc would otherwise compute by software series; on lookup
+ * hit, the JIT emits a tiny stub that loads the guest FP arg(s), BLR/CALL
+ * the host libm, stores the result, and returns via guest ra. */
+typedef enum {
+    LIBM_SIN, LIBM_COS, LIBM_TAN,
+    LIBM_ASIN, LIBM_ACOS, LIBM_ATAN,
+    LIBM_SINH, LIBM_COSH, LIBM_TANH,
+    LIBM_EXP, LIBM_LOG, LIBM_LOG10, LIBM_LOG2,
+    LIBM_SQRT, LIBM_FABS, LIBM_FLOOR, LIBM_CEIL,
+    LIBM_POW, LIBM_ATAN2, LIBM_FMOD,
+    LIBM_COUNT
+} libm_id_t;
+_Static_assert(LIBM_COUNT == 20,
+               "intrinsic_libm[] in dbt_state_t must match LIBM_COUNT");
+
+typedef struct {
+    const char *name;   /* guest symbol to look up */
+    void       *fn;     /* host libm function pointer */
+    int         two_arg;/* 0 = (d) → d, 1 = (d, d) → d */
+} libm_info_t;
+
+extern const libm_info_t libm_table[LIBM_COUNT];
 
 #endif /* DBT_H */

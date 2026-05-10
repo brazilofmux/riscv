@@ -22,6 +22,32 @@
 #include <sys/ioctl.h>
 #include <poll.h>
 #include <sys/stat.h>
+#include <math.h>
+
+/* libm intrinsic table — see libm_id_t in dbt.h. The order MUST match the
+ * enum so the per-arch dispatcher can index by id. */
+const libm_info_t libm_table[LIBM_COUNT] = {
+    [LIBM_SIN]   = {"sin",   (void*)sin,   0},
+    [LIBM_COS]   = {"cos",   (void*)cos,   0},
+    [LIBM_TAN]   = {"tan",   (void*)tan,   0},
+    [LIBM_ASIN]  = {"asin",  (void*)asin,  0},
+    [LIBM_ACOS]  = {"acos",  (void*)acos,  0},
+    [LIBM_ATAN]  = {"atan",  (void*)atan,  0},
+    [LIBM_SINH]  = {"sinh",  (void*)sinh,  0},
+    [LIBM_COSH]  = {"cosh",  (void*)cosh,  0},
+    [LIBM_TANH]  = {"tanh",  (void*)tanh,  0},
+    [LIBM_EXP]   = {"exp",   (void*)exp,   0},
+    [LIBM_LOG]   = {"log",   (void*)log,   0},
+    [LIBM_LOG10] = {"log10", (void*)log10, 0},
+    [LIBM_LOG2]  = {"log2",  (void*)log2,  0},
+    [LIBM_SQRT]  = {"sqrt",  (void*)sqrt,  0},
+    [LIBM_FABS]  = {"fabs",  (void*)fabs,  0},
+    [LIBM_FLOOR] = {"floor", (void*)floor, 0},
+    [LIBM_CEIL]  = {"ceil",  (void*)ceil,  0},
+    [LIBM_POW]   = {"pow",   (void*)pow,   1},
+    [LIBM_ATAN2] = {"atan2", (void*)atan2, 1},
+    [LIBM_FMOD]  = {"fmod",  (void*)fmod,  1},
+};
 
 /* ---- Block cache ---- */
 
@@ -329,6 +355,8 @@ int dbt_init(dbt_state_t *dbt, rv32_binary_t *bin) {
     dbt->intrinsic_memset  = dbt_find_symbol(bin, "memset");
     dbt->intrinsic_memmove = dbt_find_symbol(bin, "memmove");
     dbt->intrinsic_strlen  = dbt_find_symbol(bin, "strlen");
+    for (int i = 0; i < LIBM_COUNT; i++)
+        dbt->intrinsic_libm[i] = dbt_find_symbol(bin, libm_table[i].name);
 
     return 0;
 }
