@@ -15,7 +15,6 @@ CPU-bound benchmark_core is ~7.6x over interpreter (~3.4 BIPS, up from
 1.5 before the cache).
 
 Still to do, in roughly priority order:
-- **RAS for JALR returns** — modest single-percent win on call-heavy code.
 - **AUIPC+JALR fusion** — direct call to known target, like JAL chained.
 - **SLT+branch fusion** — fold `slt; bnez` into a single B.cond.
 - **AUIPC+load/store fusion** — known address as imm offset.
@@ -25,6 +24,22 @@ Still to do, in roughly priority order:
   state at branch points like the x86 backend does).
 - **FP register cache** — the 8 callee-saved D-registers (D8-D15) are
   unused; a small LRU for FP would help the FP-heavy tests.
+
+Tried and reverted: **RAS for JALR returns**. A faithful port of the x86
+RAS — push at JAL/JALR with rd=ra, pop+compare at JALR ret, skip the
+next_pc store on prediction hit — measured a regression on this AArch64
+(benchmark_core +5%, lisp 17-stress +28%). The chained-cache probe is
+already so tight (~9 host instructions) that skipping the single
+next_pc STR doesn't pay for the ~7-instruction push and ~10 extra
+return-side instructions. Modern AArch64 indirect-branch prediction
+seems to handle the BR-through-cache pattern well enough on its own.
+Slow-32's AArch64 backend reaches the same dead end: its `emit_ras_predict`
+does the pop and a cmp but never uses the prediction (`emit_inline_lookup(W8)`
+runs the same probe with the actual target regardless), so it pays the
+push/pop cost without claiming any benefit. A different RAS shape that
+leverages the *hardware* RAS — e.g. translating guest calls/rets to host
+BLR/RET pairs through a per-function stub — might be profitable but is
+a much bigger structural change than the porting work above.
 
 ### Register cache expansion (x86 side)
 The 8-slot LRU cache (RSI, RDI, R8-R11, R14, R15) is the main translation bottleneck for register-heavy loops on x86-64, which doesn't have more GPRs to spare without going through XMM.
