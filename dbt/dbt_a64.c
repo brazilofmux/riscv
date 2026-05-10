@@ -122,6 +122,39 @@ static void cmp_w_imm32_unsigned(emit_t *e, a64_reg_t rn, int32_t imm) {
     }
 }
 
+/* ---- FP helpers ----
+ *
+ * f[0..31] are 64-bit slots in rv32_ctx_t starting at CTX_FP_OFF. Single-
+ * precision values are NaN-boxed: lower 4 bytes hold the float bits, upper
+ * 4 bytes are 0xFFFFFFFF. Doubles take the full 8 bytes.
+ *
+ * FP register convention (no FP register cache yet):
+ *   D0/D1/D2 = scratch / source / result.
+ */
+#define FP_OFF(fp_reg) ((uint32_t)(CTX_FP_OFF + (fp_reg) * 8))
+
+static void load_fp_s(emit_t *e, int sd, int f) {
+    /* LDR Sd, [X19, fp_off]  — loads lower 4 bytes; upper of D auto-zeros. */
+    emit_ldr_s_imm(e, sd, A_CTX, FP_OFF(f));
+}
+
+static void load_fp_d(emit_t *e, int dd, int f) {
+    emit_ldr_d_imm(e, dd, A_CTX, FP_OFF(f));
+}
+
+static void store_fp_s(emit_t *e, int f, int sd) {
+    /* Store the single value, then NaN-box by writing 0xFFFFFFFF to the
+     * upper 4 bytes (RV32F spec mandates this so subsequent SP reads see
+     * a properly-boxed value). */
+    emit_str_s_imm(e, sd, A_CTX, FP_OFF(f));
+    emit_movn_w32(e, A_S0, 0, 0);   /* W9 = 0xFFFFFFFF */
+    emit_str_w32_imm(e, A_S0, A_CTX, FP_OFF(f) + 4);
+}
+
+static void store_fp_d(emit_t *e, int f, int dd) {
+    emit_str_d_imm(e, dd, A_CTX, FP_OFF(f));
+}
+
 /* Tail of every block exit: store next_pc, return to dispatcher. */
 static void exit_with_pc(emit_t *e, uint32_t next_pc) {
     emit_mov_w32_imm32(e, A_S0, next_pc);
@@ -363,9 +396,319 @@ static int translate_one(emit_t *e, rv32_insn_t *insn, uint32_t pc) {
         /* Single-threaded guest, no host barrier needed. */
         return 0;
 
+    case OP_FP_LOAD: {
+        /* funct3=2 → FLW (4 bytes + NaN-box); funct3=3 → FLD (8 bytes). */
+        a64_reg_t rs1 = load_gpr(e, A_S0, insn->rs1);
+        a64_reg_t addr;
+        if (insn->imm == 0) {
+            addr = rs1;
+        } else {
+            add_w_imm32(e, A_S3, rs1, insn->imm);
+            addr = A_S3;
+        }
+        if (insn->funct3 == 3) {
+            emit_ldr_d_reg_uxtw(e, /*D0*/ 0, A_MEM, addr);
+            store_fp_d(e, insn->rd, 0);
+        } else {
+            emit_ldr_s_reg_uxtw(e, /*S0*/ 0, A_MEM, addr);
+            store_fp_s(e, insn->rd, 0);
+        }
+        return 0;
+    }
+
+    case OP_FP_STORE: {
+        a64_reg_t rs1 = load_gpr(e, A_S0, insn->rs1);
+        a64_reg_t addr;
+        if (insn->imm == 0) {
+            addr = rs1;
+        } else {
+            add_w_imm32(e, A_S3, rs1, insn->imm);
+            addr = A_S3;
+        }
+        if (insn->funct3 == 3) {
+            load_fp_d(e, /*D0*/ 0, insn->rs2);
+            emit_str_d_reg_uxtw(e, 0, A_MEM, addr);
+        } else {
+            load_fp_s(e, /*S0*/ 0, insn->rs2);
+            emit_str_s_reg_uxtw(e, 0, A_MEM, addr);
+        }
+        return 0;
+    }
+
+    /* RV → AArch64 FMA mnemonic mapping (signs differ — see emit_a64.h
+     * comment block). */
+    case OP_FMADD: { /* RV: rd = rs1*rs2 + rs3  →  AArch64 FMADD */
+        int fmt = insn->funct7 & 3;
+        if (fmt == 0) {
+            load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2); load_fp_s(e, 2, insn->rs3);
+            emit_fmadd_s(e, 2, 0, 1, 2);
+            store_fp_s(e, insn->rd, 2);
+        } else {
+            load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2); load_fp_d(e, 2, insn->rs3);
+            emit_fmadd_d(e, 2, 0, 1, 2);
+            store_fp_d(e, insn->rd, 2);
+        }
+        return 0;
+    }
+    case OP_FMSUB: { /* RV: rd = rs1*rs2 - rs3  →  AArch64 FNMSUB (Sn*Sm - Sa) */
+        int fmt = insn->funct7 & 3;
+        if (fmt == 0) {
+            load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2); load_fp_s(e, 2, insn->rs3);
+            emit_fnmsub_s(e, 2, 0, 1, 2);
+            store_fp_s(e, insn->rd, 2);
+        } else {
+            load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2); load_fp_d(e, 2, insn->rs3);
+            emit_fnmsub_d(e, 2, 0, 1, 2);
+            store_fp_d(e, insn->rd, 2);
+        }
+        return 0;
+    }
+    case OP_FNMSUB: { /* RV: rd = -(rs1*rs2) + rs3  →  AArch64 FMSUB (Sa - Sn*Sm) */
+        int fmt = insn->funct7 & 3;
+        if (fmt == 0) {
+            load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2); load_fp_s(e, 2, insn->rs3);
+            emit_fmsub_s(e, 2, 0, 1, 2);
+            store_fp_s(e, insn->rd, 2);
+        } else {
+            load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2); load_fp_d(e, 2, insn->rs3);
+            emit_fmsub_d(e, 2, 0, 1, 2);
+            store_fp_d(e, insn->rd, 2);
+        }
+        return 0;
+    }
+    case OP_FNMADD: { /* RV: rd = -(rs1*rs2) - rs3  →  AArch64 FNMADD */
+        int fmt = insn->funct7 & 3;
+        if (fmt == 0) {
+            load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2); load_fp_s(e, 2, insn->rs3);
+            emit_fnmadd_s(e, 2, 0, 1, 2);
+            store_fp_s(e, insn->rd, 2);
+        } else {
+            load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2); load_fp_d(e, 2, insn->rs3);
+            emit_fnmadd_d(e, 2, 0, 1, 2);
+            store_fp_d(e, insn->rd, 2);
+        }
+        return 0;
+    }
+
+    case OP_FP: {
+        int funct5 = insn->funct7 >> 2;
+        int fmt    = insn->funct7 & 3;        /* 0=S, 1=D */
+
+        switch (funct5) {
+        case 0x00: /* FADD */
+            if (fmt == 0) {
+                load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
+                emit_fadd_s(e, 2, 0, 1);
+                store_fp_s(e, insn->rd, 2);
+            } else {
+                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
+                emit_fadd_d(e, 2, 0, 1);
+                store_fp_d(e, insn->rd, 2);
+            }
+            return 0;
+        case 0x01: /* FSUB */
+            if (fmt == 0) {
+                load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
+                emit_fsub_s(e, 2, 0, 1);
+                store_fp_s(e, insn->rd, 2);
+            } else {
+                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
+                emit_fsub_d(e, 2, 0, 1);
+                store_fp_d(e, insn->rd, 2);
+            }
+            return 0;
+        case 0x02: /* FMUL */
+            if (fmt == 0) {
+                load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
+                emit_fmul_s(e, 2, 0, 1);
+                store_fp_s(e, insn->rd, 2);
+            } else {
+                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
+                emit_fmul_d(e, 2, 0, 1);
+                store_fp_d(e, insn->rd, 2);
+            }
+            return 0;
+        case 0x03: /* FDIV */
+            if (fmt == 0) {
+                load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
+                emit_fdiv_s(e, 2, 0, 1);
+                store_fp_s(e, insn->rd, 2);
+            } else {
+                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
+                emit_fdiv_d(e, 2, 0, 1);
+                store_fp_d(e, insn->rd, 2);
+            }
+            return 0;
+        case 0x0B: /* FSQRT */
+            if (fmt == 0) {
+                load_fp_s(e, 0, insn->rs1);
+                emit_fsqrt_s(e, 2, 0);
+                store_fp_s(e, insn->rd, 2);
+            } else {
+                load_fp_d(e, 0, insn->rs1);
+                emit_fsqrt_d(e, 2, 0);
+                store_fp_d(e, insn->rd, 2);
+            }
+            return 0;
+
+        case 0x04: { /* FSGNJ / FSGNJN / FSGNJX */
+            /* Sign injection: bit-twiddle on the integer view of the FP
+             * bits. Cheaper than going through FP regs. */
+            uint32_t off1 = FP_OFF(insn->rs1);
+            uint32_t off2 = FP_OFF(insn->rs2);
+            uint32_t offd = FP_OFF(insn->rd);
+            if (fmt == 0) {
+                /* Single: 32-bit ops, take sign bit 31. */
+                emit_ldr_w32_imm(e, A_S0, A_CTX, off1);     /* W9  = rs1 bits */
+                emit_ldr_w32_imm(e, A_S1, A_CTX, off2);     /* W10 = rs2 bits */
+                /* Magnitude = rs1 & 0x7FFFFFFF — encodable as logical-imm */
+                emit_and_w32_imm(e, A_S0, A_S0, 0x7FFFFFFFu);
+                switch (insn->funct3) {
+                case 0: /* FSGNJ: take sign from rs2 */
+                    emit_and_w32_imm(e, A_S1, A_S1, 0x80000000u);
+                    break;
+                case 1: /* FSGNJN: inverted sign of rs2 */
+                    emit_mvn_w32(e, A_S1, A_S1);
+                    emit_and_w32_imm(e, A_S1, A_S1, 0x80000000u);
+                    break;
+                case 2: /* FSGNJX: XOR signs of rs1 and rs2 */
+                    emit_ldr_w32_imm(e, A_S2, A_CTX, off1);          /* reload rs1 */
+                    emit_eor_w32(e, A_S1, A_S2, A_S1);               /* sign(rs1)^sign(rs2) merged with low bits */
+                    emit_and_w32_imm(e, A_S1, A_S1, 0x80000000u);
+                    break;
+                }
+                emit_orr_w32(e, A_S0, A_S0, A_S1);
+                emit_str_w32_imm(e, A_S0, A_CTX, offd);
+                emit_movn_w32(e, A_S1, 0, 0);                         /* NaN-box */
+                emit_str_w32_imm(e, A_S1, A_CTX, offd + 4);
+            } else {
+                /* Double: 64-bit ops on the raw integer view of the FP
+                 * bits. Pattern:
+                 *   X9  = rs1 bits
+                 *   X10 = rs2 bits  (or NOT rs2, or rs1^rs2 — depends on funct3)
+                 *   magnitude = X9 LSL #1 LSR #1    (clear bit 63)
+                 *   sign      = X10 LSR #63 LSL #63  (keep only bit 63)
+                 *   result    = magnitude | sign
+                 */
+                emit_ldr_x64_imm(e, A_S0, A_CTX, off1);
+                emit_ldr_x64_imm(e, A_S1, A_CTX, off2);
+                emit_lsl_x64_imm(e, A_S0, A_S0, 1);
+                emit_lsr_x64_imm(e, A_S0, A_S0, 1);
+
+                switch (insn->funct3) {
+                case 0: break;                              /* FSGNJ : sign = rs2's bit 63 */
+                case 1: emit_mvn_x64(e, A_S1, A_S1); break; /* FSGNJN: invert rs2 first */
+                case 2:                                      /* FSGNJX: sign = (rs1 ^ rs2)'s bit 63 */
+                    emit_ldr_x64_imm(e, A_S2, A_CTX, off1);
+                    emit_eor_x64(e, A_S1, A_S2, A_S1);
+                    break;
+                }
+                emit_lsr_x64_imm(e, A_S1, A_S1, 63);          /* keep only sign bit at pos 0 */
+                emit_orr_x64_lsl(e, A_S0, A_S0, A_S1, 63);    /* magnitude | (sign << 63) */
+                emit_str_x64_imm(e, A_S0, A_CTX, offd);
+            }
+            return 0;
+        }
+
+        case 0x05: /* FMIN / FMAX */
+            if (fmt == 0) {
+                load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
+                if (insn->funct3 == 0) emit_fmin_s(e, 2, 0, 1);
+                else                    emit_fmax_s(e, 2, 0, 1);
+                store_fp_s(e, insn->rd, 2);
+            } else {
+                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
+                if (insn->funct3 == 0) emit_fmin_d(e, 2, 0, 1);
+                else                    emit_fmax_d(e, 2, 0, 1);
+                store_fp_d(e, insn->rd, 2);
+            }
+            return 0;
+
+        case 0x14: { /* FEQ / FLT / FLE → integer rd */
+            if (fmt == 0) {
+                load_fp_s(e, 0, insn->rs1); load_fp_s(e, 1, insn->rs2);
+                emit_fcmp_s(e, 0, 1);
+            } else {
+                load_fp_d(e, 0, insn->rs1); load_fp_d(e, 1, insn->rs2);
+                emit_fcmp_d(e, 0, 1);
+            }
+            a64_cond_t cond;
+            switch (insn->funct3) {
+            case 0:  cond = A64_COND_LS; break;  /* FLE */
+            case 1:  cond = A64_COND_MI; break;  /* FLT */
+            case 2:  cond = A64_COND_EQ; break;  /* FEQ */
+            default: cond = A64_COND_AL;
+            }
+            emit_cset_w32(e, A_S2, cond);
+            store_gpr(e, insn->rd, A_S2);
+            return 0;
+        }
+
+        case 0x18: { /* FCVT.W.S / FCVT.WU.S / FCVT.W.D / FCVT.WU.D */
+            if (fmt == 0) {
+                load_fp_s(e, 0, insn->rs1);
+                if (insn->rs2 == 0) emit_fcvtzs_w32_s(e, A_S2, 0);
+                else                emit_fcvtzu_w32_s(e, A_S2, 0);
+            } else {
+                load_fp_d(e, 0, insn->rs1);
+                if (insn->rs2 == 0) emit_fcvtzs_w32_d(e, A_S2, 0);
+                else                emit_fcvtzu_w32_d(e, A_S2, 0);
+            }
+            store_gpr(e, insn->rd, A_S2);
+            return 0;
+        }
+
+        case 0x1A: { /* FCVT.S.W / FCVT.S.WU / FCVT.D.W / FCVT.D.WU */
+            a64_reg_t rs1 = load_gpr(e, A_S0, insn->rs1);
+            if (fmt == 0) {
+                if (insn->rs2 == 0) emit_scvtf_s_w32(e, 2, rs1);
+                else                emit_ucvtf_s_w32(e, 2, rs1);
+                store_fp_s(e, insn->rd, 2);
+            } else {
+                if (insn->rs2 == 0) emit_scvtf_d_w32(e, 2, rs1);
+                else                emit_ucvtf_d_w32(e, 2, rs1);
+                store_fp_d(e, insn->rd, 2);
+            }
+            return 0;
+        }
+
+        case 0x08: /* FCVT.S.D (single-from-double) when fmt==0;
+                    * FCVT.D.S (double-from-single) when fmt==1 */
+            if (fmt == 0) {
+                load_fp_d(e, 0, insn->rs1);
+                emit_fcvt_s_d(e, 2, 0);
+                store_fp_s(e, insn->rd, 2);
+            } else {
+                load_fp_s(e, 0, insn->rs1);
+                emit_fcvt_d_s(e, 2, 0);
+                store_fp_d(e, insn->rd, 2);
+            }
+            return 0;
+
+        case 0x1C: /* FMV.X.W (fmt=0, funct3=0) — bitcast f[rs1] low 32 to int */
+            if (fmt == 0 && insn->funct3 == 0) {
+                emit_ldr_w32_imm(e, A_S2, A_CTX, FP_OFF(insn->rs1));
+                store_gpr(e, insn->rd, A_S2);
+                return 0;
+            }
+            return -1;  /* FCLASS — interpreter fallback */
+
+        case 0x1E: /* FMV.W.X (fmt=0, funct3=0) — bitcast int rs1 → f[rd] (NaN-boxed) */
+            if (fmt == 0 && insn->funct3 == 0) {
+                a64_reg_t rs1 = load_gpr(e, A_S0, insn->rs1);
+                emit_str_w32_imm(e, rs1, A_CTX, FP_OFF(insn->rd));
+                emit_movn_w32(e, A_S1, 0, 0);
+                emit_str_w32_imm(e, A_S1, A_CTX, FP_OFF(insn->rd) + 4);
+                return 0;
+            }
+            return -1;
+
+        default:
+            return -1;
+        }
+    }
+
     default:
-        /* OP_FP_LOAD / OP_FP_STORE / OP_FP / OP_FMADD / OP_FMSUB /
-         * OP_FNMSUB / OP_FNMADD — wait for P3. */
         return -1;
     }
 }

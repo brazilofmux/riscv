@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <assert.h>
 
 /*
  * Lightweight AArch64 code emitter for JIT compilation.
@@ -95,10 +96,14 @@ static inline uint32_t emit_pos(emit_t *e) {
 
 /* Patch a B (unconditional branch) at patch_offset to point at target_offset.
  * AArch64's B has a 26-bit signed immediate scaled by 4 — ±128 MB, more
- * than enough for any single JIT block. */
+ * than enough for any single JIT block. The assert catches range overflow
+ * before P4 chaining stretches displacements; if it ever fires, the call
+ * site needs a long-branch sequence (ADRP+ADD+BR) instead. */
 static inline void emit_patch_b26(emit_t *e, uint32_t patch_offset, uint32_t target_offset) {
     int32_t disp = (int32_t)(target_offset - patch_offset);
     int32_t imm26 = disp >> 2;
+    assert(imm26 >= -(1 << 25) && imm26 < (1 << 25)
+           && "B target out of ±128 MB range — needs long-branch sequence");
     uint32_t inst = 0x14000000u | ((uint32_t)imm26 & 0x03FFFFFFu);
     uint8_t *p = e->buf + patch_offset;
     p[0] = (uint8_t)(inst >>  0);
@@ -107,10 +112,15 @@ static inline void emit_patch_b26(emit_t *e, uint32_t patch_offset, uint32_t tar
     p[3] = (uint8_t)(inst >> 24);
 }
 
-/* Patch a B.cond / CBZ / CBNZ at patch_offset (19-bit imm at bits 23..5). */
+/* Patch a B.cond / CBZ / CBNZ at patch_offset (19-bit imm at bits 23..5).
+ * ±1 MB. P4 superblocks could approach this if a single block grows
+ * large; the assert keeps any overflow from silently truncating into a
+ * wild jump. */
 static inline void emit_patch_cond19(emit_t *e, uint32_t patch_offset, uint32_t target_offset) {
     int32_t disp = (int32_t)(target_offset - patch_offset);
     int32_t imm19 = disp >> 2;
+    assert(imm19 >= -(1 << 18) && imm19 < (1 << 18)
+           && "B.cond/CBZ/CBNZ target out of ±1 MB range");
     uint32_t inst;
     memcpy(&inst, e->buf + patch_offset, 4);
     inst = (inst & ~(0x7FFFFu << 5)) | (((uint32_t)imm19 & 0x7FFFFu) << 5);
@@ -483,6 +493,43 @@ static inline void emit_sxtw_x64_w32(emit_t *e, a64_reg_t rd, a64_reg_t rn) {
     emit_inst(e, inst);
 }
 
+/* LSL Xd, Xn, #shift  (UBFM Xd, Xn, #(64-shift), #(63-shift)) */
+static inline void emit_lsl_x64_imm(emit_t *e, a64_reg_t rd, a64_reg_t rn, uint32_t shift) {
+    shift &= 63u;
+    if (shift == 0) {
+        if (rd != rn) emit_mov_x64_x64(e, rd, rn);
+        return;
+    }
+    uint32_t immr = (64u - shift) & 63u;
+    uint32_t imms = 63u - shift;
+    /* UBFM Xd, Xn, immr, imms: 1 10 100110 1 immr imms Rn Rd  = 0xD3400000 */
+    uint32_t inst = 0xD3400000u | ((immr & 0x3Fu) << 16) | ((imms & 0x3Fu) << 10)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (rd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* EOR Xd, Xn, Xm */
+static inline void emit_eor_x64(emit_t *e, a64_reg_t rd, a64_reg_t rn, a64_reg_t rm) {
+    uint32_t inst = 0xCA000000u | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (rd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* MVN Xd, Xm  (ORN Xd, XZR, Xm) */
+static inline void emit_mvn_x64(emit_t *e, a64_reg_t rd, a64_reg_t rm) {
+    uint32_t inst = 0xAA2003E0u | ((uint32_t)(rm & 0x1F) << 16) | (rd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* ORR Xd, Xn, Xm, LSL #shift */
+static inline void emit_orr_x64_lsl(emit_t *e, a64_reg_t rd, a64_reg_t rn, a64_reg_t rm, uint32_t shift) {
+    /* Shift type 00 = LSL; imm6 at bits 15:10 */
+    uint32_t inst = 0xAA000000u | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((shift & 0x3Fu) << 10)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (rd & 0x1F);
+    emit_inst(e, inst);
+}
+
 /* ADD Xd, Xn, #imm12  (64-bit add immediate) */
 static inline void emit_add_x64_imm(emit_t *e, a64_reg_t rd, a64_reg_t rn, uint32_t imm12) {
     uint32_t inst = 0x91000000u | ((imm12 & 0xFFFu) << 10)
@@ -674,34 +721,41 @@ static inline void emit_cset_w32(emit_t *e, a64_reg_t rd, a64_cond_t cond) {
 
 /* ---- Branches ---- */
 
-/* B PC-relative, ±128 MB */
+/* B PC-relative, ±128 MB. byte_offset==0 is the placeholder branch that
+ * gets fixed up later via emit_patch_b26 — both forms share the same
+ * range check. */
 static inline void emit_b(emit_t *e, int32_t byte_offset) {
     int32_t imm26 = byte_offset >> 2;
+    assert(imm26 >= -(1 << 25) && imm26 < (1 << 25));
     uint32_t inst = 0x14000000u | ((uint32_t)imm26 & 0x03FFFFFFu);
     emit_inst(e, inst);
 }
 
-/* B.cond PC-relative, ±1 MB */
+/* B.cond PC-relative, ±1 MB. */
 static inline void emit_b_cond(emit_t *e, a64_cond_t cond, int32_t byte_offset) {
     int32_t imm19 = byte_offset >> 2;
+    assert(imm19 >= -(1 << 18) && imm19 < (1 << 18));
     uint32_t inst = 0x54000000u | (((uint32_t)imm19 & 0x7FFFFu) << 5) | (cond & 0xFu);
     emit_inst(e, inst);
 }
 
 static inline void emit_cbz_w32(emit_t *e, a64_reg_t rt, int32_t byte_offset) {
     int32_t imm19 = byte_offset >> 2;
+    assert(imm19 >= -(1 << 18) && imm19 < (1 << 18));
     uint32_t inst = 0x34000000u | (((uint32_t)imm19 & 0x7FFFFu) << 5) | (rt & 0x1F);
     emit_inst(e, inst);
 }
 
 static inline void emit_cbnz_w32(emit_t *e, a64_reg_t rt, int32_t byte_offset) {
     int32_t imm19 = byte_offset >> 2;
+    assert(imm19 >= -(1 << 18) && imm19 < (1 << 18));
     uint32_t inst = 0x35000000u | (((uint32_t)imm19 & 0x7FFFFu) << 5) | (rt & 0x1F);
     emit_inst(e, inst);
 }
 
 static inline void emit_cbz_x64(emit_t *e, a64_reg_t rt, int32_t byte_offset) {
     int32_t imm19 = byte_offset >> 2;
+    assert(imm19 >= -(1 << 18) && imm19 < (1 << 18));
     uint32_t inst = 0xB4000000u | (((uint32_t)imm19 & 0x7FFFFu) << 5) | (rt & 0x1F);
     emit_inst(e, inst);
 }
@@ -771,6 +825,269 @@ static inline void emit_ldp_post_sp(emit_t *e, a64_reg_t rt1, a64_reg_t rt2, int
 static inline void emit_nop(emit_t *e)         { emit_inst(e, 0xD503201Fu); }
 static inline void emit_brk(emit_t *e, uint16_t imm) {
     emit_inst(e, 0xD4200000u | ((uint32_t)imm << 5));
+}
+
+/* ============================================================================
+ * Floating-point scalar (V-register file). The V0..V31 registers can be
+ * accessed as B/H/S/D/Q views; the riscv DBT only uses the S (32-bit
+ * single-precision) and D (64-bit double-precision) views. FP register
+ * numbers in the parameter list below refer to the same V0..V31 numbering.
+ *
+ * Encodings ported from slow-32/tools/dbt/emit_a64.c.
+ * ============================================================================ */
+
+/* ---- FP <-> GP transfer ---- */
+
+/* FMOV Sd, Wn  — bitcast 32-bit GP to single FP register */
+static inline void emit_fmov_s_w32(emit_t *e, int sd, a64_reg_t wn) {
+    uint32_t inst = 0x1E270000u | ((uint32_t)(wn & 0x1F) << 5) | (uint32_t)(sd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* FMOV Wd, Sn  — extract single FP register bits into 32-bit GP */
+static inline void emit_fmov_w32_s(emit_t *e, a64_reg_t wd, int sn) {
+    uint32_t inst = 0x1E260000u | ((uint32_t)(sn & 0x1F) << 5) | (uint32_t)(wd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* FMOV Dd, Xn  — bitcast 64-bit GP to double FP register */
+static inline void emit_fmov_d_x64(emit_t *e, int dd, a64_reg_t xn) {
+    uint32_t inst = 0x9E670000u | ((uint32_t)(xn & 0x1F) << 5) | (uint32_t)(dd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* FMOV Xd, Dn  — extract double FP register bits into 64-bit GP */
+static inline void emit_fmov_x64_d(emit_t *e, a64_reg_t xd, int dn) {
+    uint32_t inst = 0x9E660000u | ((uint32_t)(dn & 0x1F) << 5) | (uint32_t)(xd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* FMOV Sd, Sn  — register-to-register (S form, single precision) */
+static inline void emit_fmov_s_s(emit_t *e, int sd, int sn) {
+    uint32_t inst = 0x1E204000u | ((uint32_t)(sn & 0x1F) << 5) | (uint32_t)(sd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* FMOV Dd, Dn  — register-to-register (D form, double precision) */
+static inline void emit_fmov_d_d(emit_t *e, int dd, int dn) {
+    uint32_t inst = 0x1E604000u | ((uint32_t)(dn & 0x1F) << 5) | (uint32_t)(dd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* ---- FP load/store with unsigned imm offset ---- */
+
+/* LDR Sd, [Xn, #imm]   (offset 4-aligned) */
+static inline void emit_ldr_s_imm(emit_t *e, int sd, a64_reg_t rn, uint32_t byte_offset) {
+    uint32_t scaled = byte_offset / 4u;
+    uint32_t inst = 0xBD400000u | ((scaled & 0xFFFu) << 10)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (uint32_t)(sd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* STR Sd, [Xn, #imm] */
+static inline void emit_str_s_imm(emit_t *e, int sd, a64_reg_t rn, uint32_t byte_offset) {
+    uint32_t scaled = byte_offset / 4u;
+    uint32_t inst = 0xBD000000u | ((scaled & 0xFFFu) << 10)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (uint32_t)(sd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* LDR Dd, [Xn, #imm]   (offset 8-aligned) */
+static inline void emit_ldr_d_imm(emit_t *e, int dd, a64_reg_t rn, uint32_t byte_offset) {
+    uint32_t scaled = byte_offset / 8u;
+    uint32_t inst = 0xFD400000u | ((scaled & 0xFFFu) << 10)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (uint32_t)(dd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* STR Dd, [Xn, #imm] */
+static inline void emit_str_d_imm(emit_t *e, int dd, a64_reg_t rn, uint32_t byte_offset) {
+    uint32_t scaled = byte_offset / 8u;
+    uint32_t inst = 0xFD000000u | ((scaled & 0xFFFu) << 10)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (uint32_t)(dd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* ---- FP load/store with [Xn, Wm, UXTW] addressing (guest-mem accesses) ---- */
+
+/* LDR Sd, [Xn, Wm, UXTW] */
+static inline void emit_ldr_s_reg_uxtw(emit_t *e, int sd, a64_reg_t rn, a64_reg_t rm) {
+    uint32_t inst = 0xBC604800u | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (uint32_t)(sd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* STR Sd, [Xn, Wm, UXTW] */
+static inline void emit_str_s_reg_uxtw(emit_t *e, int sd, a64_reg_t rn, a64_reg_t rm) {
+    uint32_t inst = 0xBC204800u | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (uint32_t)(sd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* LDR Dd, [Xn, Wm, UXTW] */
+static inline void emit_ldr_d_reg_uxtw(emit_t *e, int dd, a64_reg_t rn, a64_reg_t rm) {
+    uint32_t inst = 0xFC604800u | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (uint32_t)(dd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* STR Dd, [Xn, Wm, UXTW] */
+static inline void emit_str_d_reg_uxtw(emit_t *e, int dd, a64_reg_t rn, a64_reg_t rm) {
+    uint32_t inst = 0xFC204800u | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((uint32_t)(rn & 0x1F) << 5) | (uint32_t)(dd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* ---- FP arithmetic (2-source) ---- */
+
+/* FP 2-source: 00011110 type 1 Rm opcode Rn Rd
+ *   type: 00=S, 01=D
+ *   opcode: 0010=FMUL, 0110=FDIV, 1010=FADD, 1110=FSUB,
+ *           0100=FMAX, 0101=FMIN, 1000=FNMUL, … */
+static inline void emit_fp_2src(emit_t *e, int type, int opcode, int rd, int rn, int rm) {
+    uint32_t inst = 0x1E200800u | ((uint32_t)type << 22)
+                  | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((uint32_t)(opcode & 0x3F) << 10)
+                  | ((uint32_t)(rn & 0x1F) << 5)
+                  | (uint32_t)(rd & 0x1F);
+    emit_inst(e, inst);
+}
+
+static inline void emit_fadd_s(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 0, 0x0A, rd, rn, rm); }
+static inline void emit_fadd_d(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 1, 0x0A, rd, rn, rm); }
+static inline void emit_fsub_s(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 0, 0x0E, rd, rn, rm); }
+static inline void emit_fsub_d(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 1, 0x0E, rd, rn, rm); }
+static inline void emit_fmul_s(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 0, 0x02, rd, rn, rm); }
+static inline void emit_fmul_d(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 1, 0x02, rd, rn, rm); }
+static inline void emit_fdiv_s(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 0, 0x06, rd, rn, rm); }
+static inline void emit_fdiv_d(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 1, 0x06, rd, rn, rm); }
+static inline void emit_fmin_s(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 0, 0x14, rd, rn, rm); }
+static inline void emit_fmin_d(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 1, 0x14, rd, rn, rm); }
+static inline void emit_fmax_s(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 0, 0x10, rd, rn, rm); }
+static inline void emit_fmax_d(emit_t *e, int rd, int rn, int rm) { emit_fp_2src(e, 1, 0x10, rd, rn, rm); }
+
+/* ---- FP arithmetic (1-source) ----
+ *
+ * The 1-source opcode field isn't a clean linear sequence, so each base
+ * value is hand-coded against assembler output. */
+static inline void emit_fp_1src_base(emit_t *e, uint32_t base, int type, int rd, int rn) {
+    uint32_t inst = base | ((uint32_t)(type & 1) << 22)
+                  | ((uint32_t)(rn & 0x1F) << 5)
+                  | (uint32_t)(rd & 0x1F);
+    emit_inst(e, inst);
+}
+
+static inline void emit_fsqrt_s(emit_t *e, int rd, int rn) { emit_fp_1src_base(e, 0x1E21C000u, 0, rd, rn); }
+static inline void emit_fsqrt_d(emit_t *e, int rd, int rn) { emit_fp_1src_base(e, 0x1E21C000u, 1, rd, rn); }
+static inline void emit_fabs_s (emit_t *e, int rd, int rn) { emit_fp_1src_base(e, 0x1E20C000u, 0, rd, rn); }
+static inline void emit_fabs_d (emit_t *e, int rd, int rn) { emit_fp_1src_base(e, 0x1E20C000u, 1, rd, rn); }
+static inline void emit_fneg_s (emit_t *e, int rd, int rn) { emit_fp_1src_base(e, 0x1E214000u, 0, rd, rn); }
+static inline void emit_fneg_d (emit_t *e, int rd, int rn) { emit_fp_1src_base(e, 0x1E214000u, 1, rd, rn); }
+
+/* ---- FP fused multiply-add ----
+ *
+ * AArch64 FMA semantics (note these differ from RV in sign for FMSUB/FNMSUB):
+ *   FMADD  Sd, Sn, Sm, Sa : Sd = Sa + Sn*Sm
+ *   FMSUB  Sd, Sn, Sm, Sa : Sd = Sa - Sn*Sm
+ *   FNMSUB Sd, Sn, Sm, Sa : Sd = -Sa + Sn*Sm   ( = Sn*Sm - Sa)
+ *   FNMADD Sd, Sn, Sm, Sa : Sd = -Sa - Sn*Sm   ( = -(Sa + Sn*Sm))
+ *
+ * RV mappings (let dbt_a64.c choose the right host op):
+ *   RV FMADD  rd = rs1*rs2 + rs3   →  AArch64 FMADD
+ *   RV FMSUB  rd = rs1*rs2 - rs3   →  AArch64 FNMSUB
+ *   RV FNMSUB rd = -(rs1*rs2) + rs3 →  AArch64 FMSUB
+ *   RV FNMADD rd = -(rs1*rs2) - rs3 →  AArch64 FNMADD
+ *
+ * Encoding: 0001 1111 type o1 Rm o0 Ra Rn Rd
+ *   o1 = 0/1, o0 = 0/1 picks among FMADD(00) / FMSUB(01) / FNMADD(10) / FNMSUB(11). */
+static inline void emit_fp_3src(emit_t *e, int type, int o1, int o0,
+                                int rd, int rn, int rm, int ra) {
+    uint32_t inst = 0x1F000000u | ((uint32_t)type << 22)
+                  | ((uint32_t)(o1 & 1) << 21)
+                  | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((uint32_t)(o0 & 1) << 15)
+                  | ((uint32_t)(ra & 0x1F) << 10)
+                  | ((uint32_t)(rn & 0x1F) << 5)
+                  | (uint32_t)(rd & 0x1F);
+    emit_inst(e, inst);
+}
+
+static inline void emit_fmadd_s (emit_t *e, int rd, int rn, int rm, int ra) { emit_fp_3src(e, 0, 0, 0, rd, rn, rm, ra); }
+static inline void emit_fmadd_d (emit_t *e, int rd, int rn, int rm, int ra) { emit_fp_3src(e, 1, 0, 0, rd, rn, rm, ra); }
+static inline void emit_fmsub_s (emit_t *e, int rd, int rn, int rm, int ra) { emit_fp_3src(e, 0, 0, 1, rd, rn, rm, ra); }
+static inline void emit_fmsub_d (emit_t *e, int rd, int rn, int rm, int ra) { emit_fp_3src(e, 1, 0, 1, rd, rn, rm, ra); }
+static inline void emit_fnmadd_s(emit_t *e, int rd, int rn, int rm, int ra) { emit_fp_3src(e, 0, 1, 0, rd, rn, rm, ra); }
+static inline void emit_fnmadd_d(emit_t *e, int rd, int rn, int rm, int ra) { emit_fp_3src(e, 1, 1, 0, rd, rn, rm, ra); }
+static inline void emit_fnmsub_s(emit_t *e, int rd, int rn, int rm, int ra) { emit_fp_3src(e, 0, 1, 1, rd, rn, rm, ra); }
+static inline void emit_fnmsub_d(emit_t *e, int rd, int rn, int rm, int ra) { emit_fp_3src(e, 1, 1, 1, rd, rn, rm, ra); }
+
+/* ---- FP compare ----
+ *
+ * FCMP Rn, Rm sets NZCV; the RV F[EQ/LT/LE] result is read back via CSET.
+ * Mapping:
+ *   FEQ → CSET COND_EQ
+ *   FLT → CSET COND_MI  (after FCMP, MI = N=1 = "less than")
+ *                       — careful: NaN-aware semantics differ from
+ *                         signed-int LT. Use COND_MI to match RV's
+ *                         "ordered and less-than".
+ *   FLE → CSET COND_LS  (low-or-same = !HI = ordered and not-greater)
+ */
+static inline void emit_fcmp_s(emit_t *e, int rn, int rm) {
+    uint32_t inst = 0x1E202000u | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((uint32_t)(rn & 0x1F) << 5);
+    emit_inst(e, inst);
+}
+
+static inline void emit_fcmp_d(emit_t *e, int rn, int rm) {
+    uint32_t inst = 0x1E602000u | ((uint32_t)(rm & 0x1F) << 16)
+                  | ((uint32_t)(rn & 0x1F) << 5);
+    emit_inst(e, inst);
+}
+
+/* ---- FP convert ---- */
+
+/* FCVT Sd, Dn  (double → single) */
+static inline void emit_fcvt_s_d(emit_t *e, int sd, int dn) {
+    uint32_t inst = 0x1E624000u | ((uint32_t)(dn & 0x1F) << 5) | (uint32_t)(sd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* FCVT Dd, Sn  (single → double) */
+static inline void emit_fcvt_d_s(emit_t *e, int dd, int sn) {
+    uint32_t inst = 0x1E22C000u | ((uint32_t)(sn & 0x1F) << 5) | (uint32_t)(dd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* FCVTZ[SU] (FP → int, round toward zero):
+ *     0 sf 0 11110 type 1 00 [00=fcvtns, 01=fcvtnu, … 24=fcvtzs, 25=fcvtzu] Rn Rd
+ * sf=0 W (32-bit), sf=1 X (64-bit). type=00 single, 01 double. */
+static inline void emit_fcvtzs_w32_s(emit_t *e, a64_reg_t wd, int sn) {
+    emit_inst(e, 0x1E380000u | ((uint32_t)(sn & 0x1F) << 5) | (uint32_t)(wd & 0x1F));
+}
+static inline void emit_fcvtzu_w32_s(emit_t *e, a64_reg_t wd, int sn) {
+    emit_inst(e, 0x1E390000u | ((uint32_t)(sn & 0x1F) << 5) | (uint32_t)(wd & 0x1F));
+}
+static inline void emit_fcvtzs_w32_d(emit_t *e, a64_reg_t wd, int dn) {
+    emit_inst(e, 0x1E780000u | ((uint32_t)(dn & 0x1F) << 5) | (uint32_t)(wd & 0x1F));
+}
+static inline void emit_fcvtzu_w32_d(emit_t *e, a64_reg_t wd, int dn) {
+    emit_inst(e, 0x1E790000u | ((uint32_t)(dn & 0x1F) << 5) | (uint32_t)(wd & 0x1F));
+}
+
+/* SCVTF / UCVTF (int → FP):
+ *   0 sf 0 11110 type 1 00 010 Rn Rd  (SCVTF)
+ *   0 sf 0 11110 type 1 00 011 Rn Rd  (UCVTF) */
+static inline void emit_scvtf_s_w32(emit_t *e, int sd, a64_reg_t wn) {
+    emit_inst(e, 0x1E220000u | ((uint32_t)(wn & 0x1F) << 5) | (uint32_t)(sd & 0x1F));
+}
+static inline void emit_ucvtf_s_w32(emit_t *e, int sd, a64_reg_t wn) {
+    emit_inst(e, 0x1E230000u | ((uint32_t)(wn & 0x1F) << 5) | (uint32_t)(sd & 0x1F));
+}
+static inline void emit_scvtf_d_w32(emit_t *e, int dd, a64_reg_t wn) {
+    emit_inst(e, 0x1E620000u | ((uint32_t)(wn & 0x1F) << 5) | (uint32_t)(dd & 0x1F));
+}
+static inline void emit_ucvtf_d_w32(emit_t *e, int dd, a64_reg_t wn) {
+    emit_inst(e, 0x1E630000u | ((uint32_t)(wn & 0x1F) << 5) | (uint32_t)(dd & 0x1F));
 }
 
 #endif /* EMIT_A64_H */
