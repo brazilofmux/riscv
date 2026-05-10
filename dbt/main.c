@@ -1,6 +1,7 @@
 #include "elf_loader.h"
 #include "interp.h"
 #include "dbt.h"
+#include "shadow.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -34,6 +35,7 @@ static void usage(const char *prog) {
     else
         fprintf(stderr, "  -i       Use interpreter (forced: no JIT backend on this host)\n");
     fprintf(stderr, "  -s       Show stats on exit\n");
+    fprintf(stderr, "  -V       Verify mode — run a shadow interpreter in lockstep with the JIT\n");
     fprintf(stderr, "  -h       Show this help\n");
     fprintf(stderr, "\nRV32IM microcontroller binary executor.\n");
     fprintf(stderr, "Accepts standard ELF32 RISC-V executables (RV32IM, no RVC).\n");
@@ -111,6 +113,7 @@ int main(int argc, char *argv[]) {
     int elf_arg_index = 0;
 
     int trace = 0;
+    int verify = 0;
     for (int i = 1; i < argc; i++) {
         if (elf_file) {
             /* Everything after the ELF file is a guest arg — stop parsing */
@@ -122,6 +125,8 @@ int main(int argc, char *argv[]) {
             show_stats = 1;
         } else if (strcmp(argv[i], "-t") == 0) {
             trace = 1;
+        } else if (strcmp(argv[i], "-V") == 0) {
+            verify = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -201,6 +206,7 @@ int main(int argc, char *argv[]) {
         dbt.ctx.x[2] = new_sp;
 
         dbt.trace = trace;
+        dbt.verify = verify;
         exit_code = dbt_run(&dbt);
 
         if (show_stats) {
@@ -214,6 +220,7 @@ int main(int argc, char *argv[]) {
                     (unsigned long long)dbt.superblock_count,
                     (unsigned long long)dbt.side_exits_total,
                     (unsigned long long)dbt.diamond_merges);
+            if (dbt.shadow) shadow_print_stats((shadow_state_t *)dbt.shadow);
             if (dbt.intrinsic_memcpy || dbt.intrinsic_memset ||
                 dbt.intrinsic_memmove || dbt.intrinsic_strlen) {
                 fprintf(stderr, "  intrinsics:");

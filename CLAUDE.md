@@ -262,4 +262,15 @@ Intentional stubs (acceptable for microcontroller profile): directory ops, sleep
       with the doubles cache). Tried and reverted (regressed on this
       host — chained-exit is already too cheap for the optimizations
       to pay off): RAS, diamond merge, LUI+JALR/LOAD/STORE fusion.
+- [x] Lockstep shadow-interpreter verifier (`-V`, `shadow.c`/`shadow.h`):
+      runs a pure-C interpreter on every block from a pre-block snapshot,
+      captures stores in a shadow buffer, then compares regs/PC/FP/stores
+      against the JIT's actual effects and aborts with diagnostics on
+      first divergence. Forces unchained per-block dispatch (chaining,
+      superblocks, and self-loop warm-entry are gated off when verify is
+      on), so it cannot detect bugs that only manifest with self-loop
+      enabled, but it *does* catch register-cache, fusion, and
+      ALU/FP-translation bugs. ~54× slower than the unverified JIT;
+      intended for development sweeps, not production runs. Verify
+      sweep: core 8/8, lua 11/11, lisp 17/17.
 - [ ] Benchmark vs QEMU

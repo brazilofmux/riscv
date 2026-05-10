@@ -434,7 +434,17 @@ static void exit_with_pc(emit_t *e, uint32_t next_pc) {
  * helper is reachable only from dbt_translate_block, which is bracketed
  * by dbt_jit_writable_begin/end in dbt_run. See the invariant in dbt.h.
  */
+/* Set by dbt_translate_block from dbt->verify. When true, the chained-exit
+ * helpers fall back to plain exit_with_pc / set-next-pc-and-ret so that
+ * every block boundary returns to the C dispatcher; the shadow interpreter
+ * relies on this for per-block lockstep verification. */
+static int s_verify_mode = 0;
+
 static void chained_exit_known(emit_t *e, uint32_t target_pc) {
+    if (s_verify_mode) {
+        exit_with_pc(e, target_pc);
+        return;
+    }
     uint32_t hash_off = (uint32_t)(((target_pc >> 2) & BLOCK_CACHE_MASK) * 16u);
 
     emit_mov_w32_imm32(e, A_S0, target_pc);
@@ -468,6 +478,10 @@ static void chained_exit_known(emit_t *e, uint32_t target_pc) {
  * which is bracketed by the JIT-writable shim. See dbt.h. */
 static void chained_exit_indirect(emit_t *e, a64_reg_t pc_w) {
     emit_str_w32_imm(e, pc_w, A_CTX, CTX_NEXT_PC_OFF);
+    if (s_verify_mode) {
+        emit_ret(e);
+        return;
+    }
 
     emit_lsr_w32_imm(e, A_S0, pc_w, 2);
     if (!emit_and_w32_imm(e, A_S0, A_S0, (uint32_t)BLOCK_CACHE_MASK)) {
@@ -1239,6 +1253,8 @@ static uint8_t *emit_strlen_stub(dbt_state_t *dbt) {
 }
 
 uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
+    s_verify_mode = dbt->verify;
+
     /* Intercept intrinsic functions with native stubs */
     if (dbt->intrinsic_memcpy  && guest_pc == dbt->intrinsic_memcpy)
         return emit_memcpy_stub(dbt, 0);
@@ -1352,6 +1368,9 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 if (used[r]) nused++;
             if (past_first_branch || nused > RC_NUM_SLOTS) self_loop = 0;
         }
+        /* Verify mode wants one block boundary per shadow step, so each
+         * iteration of a self-loop must round-trip through the dispatcher. */
+        if (s_verify_mode) self_loop = 0;
         if (self_loop) {
             int loaded = 0;
             for (int r = 1; r < 32 && loaded < RC_NUM_SLOTS; r++) {
@@ -1607,7 +1626,8 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             chained_exit_known(&e, branch_fall_pc);
             goto done;
         }
-        if (num_side_exits < MAX_SIDE_EXITS && insns < MAX_BLOCK_INSNS - 4) {
+        if (!s_verify_mode &&
+            num_side_exits < MAX_SIDE_EXITS && insns < MAX_BLOCK_INSNS - 4) {
             uint32_t bp = emit_pos(&e);
             emit_b_cond(&e, branch_cond, 0);
             side_exits[num_side_exits].bcond_patch = bp;

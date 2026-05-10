@@ -11,6 +11,7 @@
  */
 #include "dbt.h"
 #include "decoder.h"
+#include "shadow.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -368,6 +369,17 @@ int dbt_run(dbt_state_t *dbt) {
                                      void *block, void *cache);
     trampoline_fn_t trampoline = (trampoline_fn_t)(void *)dbt->code_buf;
 
+    /* Lazy shadow alloc — dbt->verify is set by main.c after dbt_init. */
+    if (dbt->verify && !dbt->shadow) {
+        shadow_state_t *sh = calloc(1, sizeof(*sh));
+        if (!sh) {
+            fprintf(stderr, "rv32-run: cannot allocate shadow state\n");
+            return -1;
+        }
+        shadow_init(sh, dbt);
+        dbt->shadow = sh;
+    }
+
     for (;;) {
         uint32_t pc = dbt->ctx.next_pc;
 
@@ -399,7 +411,19 @@ int dbt_run(dbt_state_t *dbt) {
             cache_insert(dbt, pc, code);
         }
 
+        /* Verify mode: snapshot, run shadow, run JIT, compare. The
+         * chained-exit helpers in the backend short-circuit when verify
+         * is on, so each block round-trips through here. */
+        shadow_state_t *sh = (shadow_state_t *)dbt->shadow;
+        int do_verify = 0;
+        if (sh) {
+            shadow_snapshot(sh, dbt);
+            do_verify = shadow_pre_execute(sh, pc);
+        }
+
         trampoline(&dbt->ctx, dbt->bin->memory, code, dbt->cache);
+
+        if (sh && do_verify) shadow_verify(sh, dbt, pc);
 
         dbt->ctx.x[0] = 0;
     }
@@ -409,5 +433,9 @@ void dbt_cleanup(dbt_state_t *dbt) {
     if (dbt->code_buf && dbt->code_buf != MAP_FAILED) {
         munmap(dbt->code_buf, CODE_BUF_SIZE);
         dbt->code_buf = NULL;
+    }
+    if (dbt->shadow) {
+        free(dbt->shadow);
+        dbt->shadow = NULL;
     }
 }

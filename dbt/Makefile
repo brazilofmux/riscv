@@ -18,7 +18,7 @@ else
     $(error Unsupported host architecture: $(UNAME_M))
 endif
 
-SRCS = main.c elf_loader.c interp.c dbt_common.c $(ARCH_SRC)
+SRCS = main.c elf_loader.c interp.c dbt_common.c shadow.c $(ARCH_SRC)
 OBJS = $(SRCS:.c=.o)
 
 all: $(TARGET)
@@ -40,3 +40,4 @@ interp.o:      interp.c interp.h decoder.h elf_loader.h
 dbt_common.o:  dbt_common.c dbt.h decoder.h elf_loader.h
 dbt_x64.o:     dbt_x64.c dbt.h decoder.h emit_x64.h elf_loader.h
 dbt_a64.o:     dbt_a64.c dbt.h decoder.h emit_a64.h elf_loader.h
+shadow.o:      shadow.c shadow.h dbt.h decoder.h elf_loader.h

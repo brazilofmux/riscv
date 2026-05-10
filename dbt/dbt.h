@@ -136,6 +136,8 @@ typedef struct {
 
     /* Debug */
     int trace;
+    int verify;        /* lockstep shadow-interp verification mode (-V) */
+    void *shadow;      /* shadow_state_t * — opaque here, allocated when verify is set */
 } dbt_state_t;
 
 int dbt_init(dbt_state_t *dbt, rv32_binary_t *bin);

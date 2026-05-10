@@ -50,7 +50,17 @@ static inline uint32_t cache_hash(uint32_t pc) {
  * which dbt_run brackets with dbt_jit_writable_begin/end. See dbt.h
  * for the full invariant.
  */
+/* Set by dbt_translate_block from dbt->verify. When true, the chained-exit
+ * helpers fall back to plain exit_with_pc / set-next-pc-and-ret so that
+ * every block boundary returns to the C dispatcher; the shadow interpreter
+ * relies on this for per-block lockstep verification. */
+static int s_verify_mode = 0;
+
 static void emit_exit_chained(emit_t *e, uint32_t target_pc) {
+    if (s_verify_mode) {
+        emit_exit_with_pc(e, target_pc);
+        return;
+    }
     uint32_t offset = cache_hash(target_pc) * 16;
 
     /* mov eax, offset */
@@ -105,6 +115,11 @@ static void emit_exit_indirect(emit_t *e) {
     emit_byte(e, 0x89);  /* mov [rbx+disp32], eax */
     emit_byte(e, modrm(0x02, X64_RAX, X64_RBX));
     emit_u32(e, CTX_NEXT_PC_OFF);
+
+    if (s_verify_mode) {
+        emit_ret(e);
+        return;
+    }
 
     /* Hash: ecx = (eax >> 2) & MASK */
     emit_mov_rr(e, X64_RCX, X64_RAX);
@@ -183,6 +198,10 @@ static void emit_ras_push(emit_t *e, uint32_t return_pc) {
  * On miss: falls through to full emit_exit_indirect.
  */
 static void emit_exit_ras_return(emit_t *e) {
+    if (s_verify_mode) {
+        emit_exit_indirect(e);
+        return;
+    }
     /* RAS pop: ras_top = (ras_top - 1) & RAS_MASK */
 
     /* mov ecx, [rbx + CTX_RAS_TOP_OFF] */
@@ -1205,6 +1224,8 @@ static uint8_t *emit_strlen_stub(dbt_state_t *dbt, uint32_t guest_pc) {
 /* ---- Translator: RV32IMFD → x86-64 ---- */
 
 uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
+    s_verify_mode = dbt->verify;
+
     /* Intercept intrinsic functions with native stubs */
     if (dbt->intrinsic_memcpy  && guest_pc == dbt->intrinsic_memcpy)
         return emit_memcpy_stub(dbt, guest_pc, 0);
@@ -1312,6 +1333,9 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             if (past_first_branch || nused > RC_NUM_SLOTS)
                 self_loop = 0;
         }
+        /* Verify mode wants one block boundary per shadow step, so each
+         * iteration of a self-loop must round-trip through the dispatcher. */
+        if (s_verify_mode) self_loop = 0;
         if (self_loop) {
             int loaded = 0;
             for (int r = 1; r < 32 && loaded < RC_NUM_SLOTS; r++) {
@@ -1504,7 +1528,8 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                             emit_exit_chained(&e, pc + 4);
                             goto done;
                         }
-                        if (branch_imm > 0 && branch_imm <= 16 &&
+                        if (!s_verify_mode &&
+                            branch_imm > 0 && branch_imm <= 16 &&
                             dbt_can_diamond_merge(dbt, pc + 4, (uint32_t)(pc + branch_imm))) {
                             rc_flush(&e, &rc);
                             rc_init(&rc);
@@ -1527,7 +1552,8 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                             dbt->diamond_merges++;
                             break;
                         }
-                        if (num_side_exits < MAX_SIDE_EXITS && count < MAX_BLOCK_INSNS - 4) {
+                        if (!s_verify_mode &&
+                            num_side_exits < MAX_SIDE_EXITS && count < MAX_BLOCK_INSNS - 4) {
                             emit_jcc_rel32(&e, branch_jcc);
                             side_exits[num_side_exits].jcc_patch = emit_pos(&e) - 4;
                             side_exits[num_side_exits].target_pc = (uint32_t)(pc + branch_imm);
