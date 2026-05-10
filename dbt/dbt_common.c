@@ -342,13 +342,15 @@ int dbt_init(dbt_state_t *dbt, rv32_binary_t *bin) {
 
     dbt->code_buf = mmap(NULL, CODE_BUF_SIZE,
                          PROT_READ | PROT_WRITE | PROT_EXEC,
-                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                         DBT_JIT_MMAP_FLAGS, -1, 0);
     if (dbt->code_buf == MAP_FAILED) {
         fprintf(stderr, "rv32-run: cannot allocate JIT code buffer\n");
         return -1;
     }
 
+    dbt_jit_writable_begin();
     dbt_emit_trampoline(dbt);
+    dbt_jit_writable_end();
 
     /* Look up intrinsic function addresses in symbol table */
     dbt->intrinsic_memcpy  = dbt_find_symbol(bin, "memcpy");
@@ -391,7 +393,9 @@ int dbt_run(dbt_state_t *dbt) {
         if (be) {
             code = be->native_code;
         } else {
+            dbt_jit_writable_begin();
             code = dbt_translate_block(dbt, pc);
+            dbt_jit_writable_end();
             cache_insert(dbt, pc, code);
         }
 

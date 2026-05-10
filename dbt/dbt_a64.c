@@ -39,11 +39,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-/* Host libc functions used by the intrinsic native stubs below. */
-extern void *memcpy(void *, const void *, size_t);
-extern void *memmove(void *, const void *, size_t);
-extern void *memset(void *, int, size_t);
-extern size_t strlen(const char *);
 
 /* Max guest instructions per translated block — same as x86 backend. */
 #define MAX_BLOCK_INSNS  64

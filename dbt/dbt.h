@@ -3,6 +3,30 @@
 
 #include "elf_loader.h"
 #include <stdint.h>
+#include <sys/mman.h>
+
+/* ============================================================================
+ * JIT memory portability (Apple Silicon W^X)
+ * ============================================================================
+ * Apple Silicon enforces W^X on JIT pages: a single page cannot be both
+ * writable and executable. The mmap must use MAP_JIT, and code emission
+ * brackets writes with pthread_jit_write_protect_np(0/1) to flip the
+ * thread's view of the JIT page between RW and RX. Linux and Intel macOS
+ * have no such restriction; the helpers compile to no-ops there.
+ *
+ * Instruction-cache invalidation on AArch64 is handled separately by
+ * __builtin___clear_cache calls inside the emitter. */
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <pthread.h>
+#define DBT_JIT_MMAP_FLAGS (MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT)
+static inline void dbt_jit_writable_begin(void) { pthread_jit_write_protect_np(0); }
+static inline void dbt_jit_writable_end(void)   { pthread_jit_write_protect_np(1); }
+#else
+#define DBT_JIT_MMAP_FLAGS (MAP_PRIVATE | MAP_ANONYMOUS)
+static inline void dbt_jit_writable_begin(void) { }
+static inline void dbt_jit_writable_end(void)   { }
+#endif
+
 
 /* Return Address Stack for call/return prediction */
 #define RAS_SIZE  32
