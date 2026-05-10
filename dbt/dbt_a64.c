@@ -40,8 +40,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Max guest instructions per translated block — same as x86 backend. */
-#define MAX_BLOCK_INSNS  64
+/* MAX_BLOCK_INSNS is defined in dbt.h (shared with the x86 backend and
+ * the shadow interpreter). */
 
 /* Named scratch-register aliases for readability inside the translator. */
 #define A_CTX    A64_W19

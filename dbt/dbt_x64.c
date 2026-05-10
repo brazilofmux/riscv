@@ -20,8 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Max guest instructions per translated block */
-#define MAX_BLOCK_INSNS  64
+/* MAX_BLOCK_INSNS is defined in dbt.h (shared with the AArch64 backend
+ * and the shadow interpreter). */
 
 int dbt_jit_available(void) { return 1; }
 

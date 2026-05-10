@@ -91,6 +91,13 @@ _Static_assert(sizeof(block_entry_t) == 16, "block_entry_t must be 16 bytes");
 #define BLOCK_CACHE_SIZE  (64 * 1024)  /* must be power of 2 */
 #define BLOCK_CACHE_MASK  (BLOCK_CACHE_SIZE - 1)
 
+/* Maximum guest instructions per translated block. Both backends respect
+ * this — and the shadow interpreter must use the same value, since with
+ * chaining/superblocks/self-loop disabled in verify mode this is the
+ * upper bound on a block's instruction count when no control-flow op is
+ * encountered. */
+#define MAX_BLOCK_INSNS  64
+
 /* Field offsets within rv32_ctx_t. Used by both backends to address
  * the guest CPU state via [ctx_ptr + offset]. */
 #define CTX_X_OFF         0     /* x[0..31] at offsets 0..127 */

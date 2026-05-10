@@ -666,8 +666,12 @@ int shadow_pre_execute(shadow_state_t *s, uint32_t guest_pc) {
 
     /* Step until the JIT would also exit. With chaining/superblocks/self-
      * loops disabled under verify mode, that's: first branch/jump/system
-     * or MAX_BLOCK_INSNS straight-line instructions. */
-    int budget = 256;  /* generous slack over MAX_BLOCK_INSNS=64 */
+     * or MAX_BLOCK_INSNS straight-line instructions, whichever comes
+     * first. The budget MUST equal MAX_BLOCK_INSNS exactly — over-stepping
+     * crosses into the next chained block (the JIT exits there at its
+     * own first control-flow op or its own 64-insn limit), and the
+     * shadow's stop point would no longer match the JIT's. */
+    int budget = MAX_BLOCK_INSNS;
     while (budget-- > 0) {
         step_result_t r = shadow_step(s);
         if (r == STEP_ABORT) {
