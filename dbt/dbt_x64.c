@@ -1407,8 +1407,11 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 if (ni.rd == 1)
                     emit_ras_push(&e, return_pc);
 
-                /* Tail call: inline jump like JAL rd=0 */
-                if (ni.rd == 0
+                /* Tail call: inline jump like JAL rd=0. Disabled in verify
+                 * mode — extending the block past the JALR boundary would
+                 * make the JIT exit at a later PC than the shadow expects. */
+                if (!s_verify_mode
+                    && ni.rd == 0
                     && !(target >= guest_pc && target <= pc + 4)
                     && count < MAX_BLOCK_INSNS - 4) {
                     pc = target;
@@ -1593,8 +1596,12 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
             uint32_t target = (uint32_t)(pc + insn.imm);
             /* Inline unconditional jumps (j pseudo = JAL x0) when safe.
              * Don't inline if target is within already-translated range
-             * (would re-translate and potentially loop forever). */
-            if (insn.rd == 0 && !(target >= guest_pc && target <= pc)
+             * (would re-translate and potentially loop forever).
+             * Disabled in verify mode — extending the block past the JAL
+             * boundary would make the JIT exit at a later PC than the
+             * shadow expects. */
+            if (!s_verify_mode
+                && insn.rd == 0 && !(target >= guest_pc && target <= pc)
                 && count < MAX_BLOCK_INSNS - 4) {
                 pc = target;
                 break;
