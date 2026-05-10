@@ -74,16 +74,17 @@ The DBT accepts standard RV32IMFD ELF binaries but validates:
 - RAX, RCX, RDX = scratch (used by mul/div, cache probes)
 - RSI, RDI, R8-R11, R14, R15 = register cache slots
 
-**AArch64 backend (`dbt_a64.c`, baseline + chaining + intrinsics + LUI/AUIPC fusion):**
+**AArch64 backend (`dbt_a64.c`, baseline + chaining + intrinsics + LUI/AUIPC fusion + register cache):**
 - X19 = pointer to `rv32_ctx_t`
 - X20 = guest memory base pointer
 - X21 = block cache base pointer
+- X22-X28 = 7 LRU register cache slots (callee-saved, preserved by trampoline)
+- X15 = 8th LRU register cache slot (caller-saved — safe within a block;
+  intrinsic stubs that BLR don't share cache state with regular blocks)
 - X9-X12 = scratch (computation, address calculation, cache probes)
 - X14 = JALR target staging
 - D0-D2 = FP scratch
-- (No register cache yet — every guest reg access goes through ctx memory.
-   Adding one is the largest remaining perf opportunity; AArch64 has 11+
-   spare callee-saved GPRs available for slots.)
+- (No FP register cache yet — every FP access goes through ctx memory.)
 
 The two backends share `dbt_common.c` (block cache, ECALL handler, run loop,
 init/cleanup). The Makefile picks the right per-arch translator via
@@ -248,8 +249,10 @@ Intentional stubs (acceptable for microcontroller profile): directory ops, sleep
 - [x] FP test suite (50 tests)
 - [x] 8 ported programs, 280+ tests passing
 - [x] AArch64 host backend (`dbt_a64.c`): trampoline, integer + FP
-      translator, block chaining, intrinsic stubs, LUI/AUIPC fusion.
-      All 280+ tests pass; ~3-5× over interpreter on RV32IMFD workloads.
-      Pending: register cache, RAS, AUIPC+JALR fusion, SLT+branch fusion,
-      diamond merge, superblocks.
+      translator, block chaining, intrinsic stubs, LUI/AUIPC fusion,
+      8-slot LRU integer register cache (X22-X28 + X15).
+      All 314 tests pass; ~7-9× over interpreter on RV32IMFD workloads
+      (benchmark_core ~3.4 BIPS, lisp 17-stress 9× speedup).
+      Pending: RAS, AUIPC+JALR fusion, SLT+branch fusion, diamond merge,
+      superblocks, FP register cache.
 - [ ] Benchmark vs QEMU

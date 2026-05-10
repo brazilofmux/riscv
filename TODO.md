@@ -9,20 +9,22 @@ The one remaining checklist item. Now that 7 real programs are ported, we have m
 Done: trampoline, full RV32IMFD integer + FP translator (`dbt_a64.c` plus
 `emit_a64.h` instruction emitters), block chaining via inline cache,
 intrinsic native stubs (memcpy/memset/memmove/strlen), LUI/AUIPC + ADDI
-fusion. All 280+ tests pass under JIT on aarch64; lisp 17-stress is ~5x
-over interpreter, the CPU-bound benchmark is ~3.4x (1.5 BIPS).
+fusion, 8-slot LRU integer register cache (X22-X28 + X15). All 314 tests
+pass under JIT on aarch64; lisp 17-stress is ~9x over interpreter, the
+CPU-bound benchmark_core is ~7.6x over interpreter (~3.4 BIPS, up from
+1.5 before the cache).
 
 Still to do, in roughly priority order:
-- **Register cache** (biggest remaining win). AArch64 has ~11 callee-saved
-  GPRs free (X22-X28 plus X22-X29 via STP saves) for cache slots — a
-  16-slot LRU would eliminate most ctx round-trips on register-heavy
-  loops. Would close most of the gap to native.
 - **RAS for JALR returns** — modest single-percent win on call-heavy code.
 - **AUIPC+JALR fusion** — direct call to known target, like JAL chained.
 - **SLT+branch fusion** — fold `slt; bnez` into a single B.cond.
 - **AUIPC+load/store fusion** — known address as imm offset.
 - **Diamond merge** for short forward branches.
-- **Superblocks with side-exit snapshots** (depends on register cache).
+- **Superblocks with side-exit snapshots** (the register cache groundwork
+  is now in place; superblock side-exits would need to snapshot the cache
+  state at branch points like the x86 backend does).
+- **FP register cache** — the 8 callee-saved D-registers (D8-D15) are
+  unused; a small LRU for FP would help the FP-heavy tests.
 
 ### Register cache expansion (x86 side)
 The 8-slot LRU cache (RSI, RDI, R8-R11, R14, R15) is the main translation bottleneck for register-heavy loops on x86-64, which doesn't have more GPRs to spare without going through XMM.
