@@ -643,13 +643,6 @@ static inline void emit_mov_r64_imm64(emit_t *e, int reg, uint64_t imm) {
     emit_u64(e, imm);
 }
 
-/* Context offsets in rv32_ctx_t */
-#define CTX_NEXT_PC_OFF   128   /* x[32] = 128 bytes, then next_pc */
-#define CTX_RAS_OFF       132   /* next_pc + 4 = 132, ras[0..31] */
-#define CTX_RAS_TOP_OFF   260   /* 132 + 32*4 = 260, ras_top */
-#define CTX_FP_OFF        264   /* ras_top + 4 = 264, f[0..31] x 8 bytes */
-#define CTX_FCSR_OFF      520   /* 264 + 256 = 520 */
-
 static inline void emit_exit_with_pc(emit_t *e, uint32_t next_pc) {
     /* mov dword [rbx + CTX_NEXT_PC_OFF], imm32 */
     emit_byte(e, 0xC7);

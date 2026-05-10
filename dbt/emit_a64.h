@@ -181,14 +181,22 @@ static inline bool a64_encode_logical_imm32(uint32_t val, uint32_t *encoded) {
 /* ---- Move immediate (MOVZ / MOVK / MOV pseudo) ---- */
 
 static inline void emit_movz_w32(emit_t *e, a64_reg_t rd, uint16_t imm16, int shift) {
-    uint32_t hw = (shift == 16) ? 1 : 0;
+    uint32_t hw = (uint32_t)shift / 16u;
     uint32_t inst = 0x52800000u | (hw << 21) | ((uint32_t)imm16 << 5) | (rd & 0x1F);
     emit_inst(e, inst);
 }
 
 static inline void emit_movk_w32(emit_t *e, a64_reg_t rd, uint16_t imm16, int shift) {
-    uint32_t hw = (shift == 16) ? 1 : 0;
+    uint32_t hw = (uint32_t)shift / 16u;
     uint32_t inst = 0x72800000u | (hw << 21) | ((uint32_t)imm16 << 5) | (rd & 0x1F);
+    emit_inst(e, inst);
+}
+
+/* MOVN Wd, #imm16, LSL #shift  →  Wd = ~(imm16 << shift). Used to load
+ * sparse all-ones constants in one instruction (e.g. 0xFFFFFF00 = MOVN #0xFF). */
+static inline void emit_movn_w32(emit_t *e, a64_reg_t rd, uint16_t imm16, int shift) {
+    uint32_t hw = (uint32_t)shift / 16u;
+    uint32_t inst = 0x12800000u | (hw << 21) | ((uint32_t)imm16 << 5) | (rd & 0x1F);
     emit_inst(e, inst);
 }
 
@@ -204,18 +212,25 @@ static inline void emit_movk_x64(emit_t *e, a64_reg_t rd, uint16_t imm16, int sh
     emit_inst(e, inst);
 }
 
-/* MOV Wd, #imm32 — 1 or 2 instructions (MOVZ ± MOVK). */
+/* MOV Wd, #imm32 — emits 1 or 2 instructions, picking the shortest of
+ * MOVZ (single non-zero halfword), MOVN (single non-zero halfword in the
+ * inverted constant — covers 0xFFFFxxxx / 0xxxxxFFFF style values), or
+ * MOVZ+MOVK as the general fallback. */
 static inline void emit_mov_w32_imm32(emit_t *e, a64_reg_t rd, uint32_t imm) {
     uint16_t lo = (uint16_t)(imm & 0xFFFF);
     uint16_t hi = (uint16_t)(imm >> 16);
-    if (hi == 0) {
-        emit_movz_w32(e, rd, lo, 0);
-    } else if (lo == 0) {
-        emit_movz_w32(e, rd, hi, 16);
-    } else {
-        emit_movz_w32(e, rd, lo, 0);
-        emit_movk_w32(e, rd, hi, 16);
-    }
+
+    if (hi == 0)             { emit_movz_w32(e, rd, lo, 0);  return; }
+    if (lo == 0)             { emit_movz_w32(e, rd, hi, 16); return; }
+
+    uint32_t inv = ~imm;
+    uint16_t nlo = (uint16_t)(inv & 0xFFFF);
+    uint16_t nhi = (uint16_t)(inv >> 16);
+    if (nhi == 0)            { emit_movn_w32(e, rd, nlo, 0);  return; }
+    if (nlo == 0)            { emit_movn_w32(e, rd, nhi, 16); return; }
+
+    emit_movz_w32(e, rd, lo, 0);
+    emit_movk_w32(e, rd, hi, 16);
 }
 
 /* MOV Xd, #imm64 — up to 4 instructions. */

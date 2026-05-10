@@ -44,6 +44,15 @@ _Static_assert(sizeof(block_entry_t) == 16, "block_entry_t must be 16 bytes");
 #define BLOCK_CACHE_SIZE  (64 * 1024)  /* must be power of 2 */
 #define BLOCK_CACHE_MASK  (BLOCK_CACHE_SIZE - 1)
 
+/* Field offsets within rv32_ctx_t. Used by both backends to address
+ * the guest CPU state via [ctx_ptr + offset]. */
+#define CTX_X_OFF         0     /* x[0..31] at offsets 0..127 */
+#define CTX_NEXT_PC_OFF   128   /* x[32] = 128 bytes, then next_pc */
+#define CTX_RAS_OFF       132   /* next_pc + 4 = 132, ras[0..31] */
+#define CTX_RAS_TOP_OFF   260   /* 132 + 32*4 = 260, ras_top */
+#define CTX_FP_OFF        264   /* ras_top + 4 = 264, f[0..31] x 8 bytes */
+#define CTX_FCSR_OFF      520   /* 264 + 256 = 520 */
+
 #define CODE_BUF_SIZE     (256 * 1024 * 1024)  /* 256 MB JIT code buffer */
 
 /* DBT state */
