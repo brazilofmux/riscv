@@ -4,7 +4,6 @@ Stage 9: AST Expressions
 . --- Directory Services ---
 . Checking if SCAN_TEST.PRG exists:  .T.
 . Checking if NOFILE.DBF exists:  .F.
-. All > PRG:  .F.
-. PRG > 0:  .F.
+. All > PRG:  .T.
+. PRG > 0:  .T.
 . ZZZ = 0:  .T.
-
