@@ -271,10 +271,33 @@ touching runtime/ or the ECALL layer. The .elf files are gitignored.
       iteration), 8-slot LRU FP register cache (D8-D15) for doubles,
       and native-libm intrinsic stubs for 20 transcendental functions
       (sin/cos/tan/exp/log/sqrt/pow/atan2/...). All suites pass
-      (265 tests, 2026-07-16). benchmark_core: **~9.3 BIPS**
-      (2.494 G instructions in 0.27 s; 400M-iter run confirms at
-      ~9.975 G in 1.06 s) — ~17× over the interpreter (~530 MIPS)
-      and at parity with slow32-dbt's 9.2 BIPS on the same kernels.
+      (265 tests, 2026-07-16). benchmark_core: **~9.1-9.3 BIPS on
+      a64** (2.494 G instructions in 0.27 s; 400M-iter run confirms at
+      ~9.975 G in 1.06 s) — ~17x over the interpreter (~530 MIPS).
+
+      vs slow32-dbt, measured like-for-like 2026-07-16 (identical
+      kernels from examples/benchmark_core.c, BENCH_ITERS=100M, same
+      Apple M5 Max, same hour):
+
+          rv32-run     2,493,751,040 instr   0.274 s   9.10 BIPS
+          slow32-dbt   2,850,025,393 instr   0.380 s   7.50 BIPS
+
+      RV32 needs 12.5% fewer instructions for the same work (denser
+      encoding + gcc's optimizer), runs them 21% faster, and finishes
+      39% sooner in wall time.
+
+      DO NOT compare BIPS against slow32-dbt's "9.2/9.5" figure: that
+      is its **x86-64** number. On Apple Silicon slow32-dbt is 7.50,
+      and slow-32's docs/EMULATORS.md "~6 BIPS (Apple Silicon)" is
+      itself stale. Nor compare the two repos' checked-in
+      benchmark_core binaries: same source file, but the defaults are
+      10x apart (slow-32 BENCH_ITERS=10000000u, here 100000000u), and
+      at 10M the slow-32 build spends 21% of its runtime in JIT
+      warm-up (slow32-dbt -p: translate 0.010 s of a 0.047 s run).
+      Rebuild both at the same BENCH_ITERS on the same host, or the
+      comparison is meaningless. An earlier revision of this line
+      claimed "parity with slow32-dbt's 9.2 BIPS" — it was wrong for
+      all three reasons above.
       Other datapoints: lisp 17-stress 11× over interp,
       transcendental-heavy microbench ~8× over the no-stubs baseline,
       FP loops ~30% faster with the doubles cache.
