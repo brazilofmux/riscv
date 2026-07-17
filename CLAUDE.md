@@ -27,13 +27,15 @@ Guest programs invoke host services through the RISC-V `ecall` instruction using
 
 | ECALL | Name | Arguments |
 |-------|------|-----------|
+| 34 | mkdirat | a1=path, a2=mode |
 | 35 | unlinkat | a1=path |
 | 46 | ftruncate | a0=fd, a1=length |
-| 56 | openat | a0=dirfd, a1=path, a2=flags, a3=mode |
+| 56 | openat | a0=dirfd, a1=path, a2=flags (guest Linux O_* translated to host), a3=mode |
 | 57 | close | a0=fd |
 | 62 | lseek | a0=fd, a1=offset, a2=whence |
 | 63 | read | a0=fd, a1=buf, a2=len |
 | 64 | write | a0=fd, a1=buf, a2=len |
+| 79 | fstatat | a1=path, a2=statbuf, a3=flags |
 | 80 | fstat | stub, returns -1 |
 | 90 | opendir | a0=path → directory handle (>=0) or -1 |
 | 91 | readdir | a0=handle, a1=struct dirent buf → 0 / -1 |
@@ -152,8 +154,8 @@ riscv/
 ├── runtime/               # Guest-side runtime (RV32IM)
 │   ├── crt0.s             # Startup code (argc/argv, BSS clear)
 │   ├── link.ld            # Linker script (code@0x10000, data@0x80000)
-│   ├── include/           # C headers (21 files: stdio.h, stdlib.h, etc.)
-│   └── src/               # libc implementation (20 modules)
+│   ├── include/           # C headers (26 files: stdio.h, stdlib.h, dirent.h, etc.)
+│   └── src/               # libc implementation (17 C modules + 4 asm)
 ├── examples/              # Test and benchmark programs
 ├── tests/                 # Core runtime regression tests (8 suites)
 ├── lua/                   # Lua 5.4 interpreter port (11 tests)
@@ -161,10 +163,10 @@ riscv/
 ├── lisp/                  # Scheme interpreter port (17 tests)
 ├── prolog/                # Prolog interpreter port (16 tests)
 ├── zork/                  # MojoZork Z-Machine port (3 tests)
-├── nano/                  # nano text editor port (33 tests)
+├── nano/                  # nano text editor port (43 tests)
 ├── dbase/                 # dBASE III clone port (102 tests)
-├── forth/                 # Forth interpreter port
-├── scripts/               # Helper scripts
+├── forth/                 # Forth interpreter port (22 tests)
+├── bench-vs-qemu.sh       # rv32-run vs qemu-riscv32 benchmark (podman)
 └── docs/                  # Design documents
 ```
 
@@ -201,9 +203,16 @@ The runtime provides a comprehensive freestanding libc:
 - **time**: time(), clock(), gmtime(), localtime(), mktime(), strftime()
 - **setjmp**: setjmp/longjmp (assembly)
 - **term**: terminal raw mode, cursor positioning, keyboard polling (ANSI escape sequences)
+- **dirent**: real opendir/readdir/closedir via ECALLs 90-92
+- **unistd**: nanosleep/usleep/sleep (ECALL 101), unlink, ftruncate, mkdir, stat
 - **dtoa**: David Gay's algorithm for precise float-to-string
 
-Intentional stubs (acceptable for microcontroller profile): directory ops, sleep, signal, locale.
+Intentional stubs (acceptable for microcontroller profile): fstat-on-fd, brk, signal, locale.
+
+Guest binaries statically link this libc, so **checked-out ELFs go stale
+when the runtime or its headers change** (e.g. the dirent layout) —
+rebuild the ported programs (`make -C lua`, `make -C dbase`, ...) after
+touching runtime/ or the ECALL layer. The .elf files are gitignored.
 
 ## Key Design Decisions
 
@@ -222,9 +231,9 @@ Intentional stubs (acceptable for microcontroller profile): directory ops, sleep
 | Lisp | 17 | -O2 | Scheme interpreter |
 | Prolog | 16 | -O2 | Prolog interpreter |
 | MojoZork | 3 | -O2 | Z-Machine interpreter (Infocom games) |
-| nano | 33 | -O2 | Terminal text editor |
+| nano | 43 | -O2 | Terminal text editor |
 | dBASE III | 102 | -O2 | Database system with indexing |
-| Forth | — | -O2 | Forth interpreter |
+| Forth | 22 | -O2 | Forth interpreter |
 
 ## Reference Material
 
@@ -247,11 +256,13 @@ Intentional stubs (acceptable for microcontroller profile): directory ops, sleep
 - [x] Return address stack prediction
 - [x] Intrinsic function interception (memcpy, memset, memmove, strlen)
 - [x] Diamond merge for short forward branches
-- [x] ECALL service layer (15 syscalls)
-- [x] Runtime libc (20 modules, 21 headers)
+- [x] ECALL service layer (21 syscalls)
+- [x] Runtime libc (21 modules, 26 headers)
 - [x] RV32F/D floating-point extensions (interpreter + JIT)
 - [x] FP test suite (50 tests)
-- [x] 8 ported programs, 280+ tests passing
+- [x] 8 ported programs; full sweep 2026-07-16: core 8/8, lua 11/11,
+      lisp 17/17, sbasic 42/43 (1 skip), prolog 16/16, zork 3/3,
+      nano 43/43, dbase 102/102, forth 22/22 — 265 tests
 - [x] AArch64 host backend (`dbt_a64.c`): trampoline, integer + FP
       translator, block chaining, intrinsic stubs, LUI/AUIPC fusion,
       SLT+branch fusion, 8-slot LRU integer register cache (X22-X28 +
@@ -259,11 +270,15 @@ Intentional stubs (acceptable for microcontroller profile): directory ops, sleep
       back-edge optimization (warm-entry skips cold loads every
       iteration), 8-slot LRU FP register cache (D8-D15) for doubles,
       and native-libm intrinsic stubs for 20 transcendental functions
-      (sin/cos/tan/exp/log/sqrt/pow/atan2/...). All 314 tests pass;
-      ~11-13× over interpreter on RV32IMFD workloads (benchmark_core
-      ~5.3 BIPS, lisp 17-stress 11× over interp, transcendental-heavy
-      microbench ~8× over the no-stubs baseline, FP loops ~30% faster
-      with the doubles cache). Tried and reverted (regressed on this
+      (sin/cos/tan/exp/log/sqrt/pow/atan2/...). All suites pass
+      (265 tests, 2026-07-16). benchmark_core: **~9.3 BIPS**
+      (2.494 G instructions in 0.27 s; 400M-iter run confirms at
+      ~9.975 G in 1.06 s) — ~17× over the interpreter (~530 MIPS)
+      and at parity with slow32-dbt's 9.2 BIPS on the same kernels.
+      Other datapoints: lisp 17-stress 11× over interp,
+      transcendental-heavy microbench ~8× over the no-stubs baseline,
+      FP loops ~30% faster with the doubles cache.
+      Tried and reverted (regressed on this
       host — chained-exit is already too cheap for the optimizations
       to pay off): RAS, diamond merge, LUI+JALR/LOAD/STORE fusion.
 - [x] Lockstep shadow-interpreter verifier (`-V`, `shadow.c`/`shadow.h`):
