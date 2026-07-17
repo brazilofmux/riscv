@@ -282,9 +282,31 @@ touching runtime/ or the ECALL layer. The .elf files are gitignored.
           rv32-run     2,493,751,040 instr   0.274 s   9.10 BIPS
           slow32-dbt   2,850,025,393 instr   0.380 s   7.50 BIPS
 
-      RV32 needs 12.5% fewer instructions for the same work (denser
-      encoding + gcc's optimizer), runs them 21% faster, and finishes
-      39% sooner in wall time.
+      RV32 needs 12.5% fewer instructions for the same work, runs them
+      21% faster, and finishes 39% sooner in wall time.
+
+      DO NOT read that as an ISA result — it is not attributed, and at
+      least three variables are uncontrolled:
+        1. Compilers differ. RV32 here is gcc; slow-32 is its own
+           in-tree LLVM backend. The instruction-count gap may be
+           mostly codegen quality, not encoding density.
+        2. The programs differ slightly. Same kernels (byte-identical
+           C), but slow-32's build links a libc for printf (97 blocks
+           translated) while ours is bare-metal ecall (36).
+        3. **slow-32's AArch64 translator is missing an optimization
+           its x86-64 translator has.** translate.c pre-warms
+           loop-used registers at block entry so the back-edge skips
+           the cold loads every iteration (16 sites, `loop_regs`);
+           translate_a64.c has zero of it. Our dbt_a64.c *does* have
+           it (self-loop / warm_entry), ported to "match the x86
+           backend's conservative rules". The measurement above was
+           taken on a64 — i.e. on the one host where slow-32's
+           translator is incomplete. That likely also explains
+           slow-32's own ~9.5 (x86-64) vs ~6 (Apple Silicon) spread,
+           which reads like a hardware fact and is probably a
+           translator-completeness fact.
+      The experiment that would settle it is to re-run both on x86-64,
+      where slow-32's translator is whole. Not done.
 
       DO NOT compare BIPS against slow32-dbt's "9.2/9.5" figure: that
       is its **x86-64** number. On Apple Silicon slow32-dbt is 7.50,
