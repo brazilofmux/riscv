@@ -319,7 +319,15 @@ touching runtime/ or the ECALL layer. The .elf files are gitignored.
       across guest ISAs (fused BEQ does more per instruction). Before
       anyone claims a reason: disassemble both emitted hot loops and
       count host instructions per iteration. An x86-64 run of both
-      adds a second datapoint. Neither done.
+      adds a second datapoint. **The x86-64 run is now done (2026-07-18,
+      Cascade Lake Xeon): dbase reports, rv32-run 177.7 s vs slow32-dbt
+      212.0 s = 1.19, against the Mac's 1.38.** Divide out the
+      instruction-count component (~1.14) and the per-instruction
+      translator ratio is ~1.04 on x64 vs ~1.21 on a64 — the two x64
+      backends are near parity, and the gap is specifically between the
+      two a64 backends. What travels to every host is the count
+      component (gcc + fused branches, not separable). Hot-loop
+      profiling on a64 remains the open, optional step.
 
       DO NOT compare BIPS against slow32-dbt's "9.2/9.5" figure: that
       is its **x86-64** number. On Apple Silicon slow32-dbt is 7.50,
