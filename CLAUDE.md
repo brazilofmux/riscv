@@ -283,7 +283,14 @@ touching runtime/ or the ECALL layer. The .elf files are gitignored.
           slow32-dbt   2,850,025,393 instr   0.380 s   7.50 BIPS
 
       RV32 needs 12.5% fewer instructions for the same work, runs them
-      21% faster, and finishes 39% sooner in wall time.
+      21% faster, and is 39% faster in wall time (i.e. slow32-dbt takes
+      39% longer; "39% sooner" is wrong — time saved is 28%).
+
+      Real-workload replication (2026-07-17): the MAJESTY dBASE report
+      suite (54,481-record merge join, indexing, 12 reports) end-to-end
+      under both DBTs, same M5 Max: rv32-run 40.3 s vs slow32-dbt
+      55.5 s — ratio 1.378 vs benchmark_core's 1.387. And all twelve
+      reports byte-identical across the two guests.
 
       DO NOT read that as an ISA result — it is not attributed, and at
       least three variables are uncontrolled:
