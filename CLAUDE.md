@@ -329,6 +329,20 @@ touching runtime/ or the ECALL layer. The .elf files are gitignored.
       component (gcc + fused branches, not separable). Hot-loop
       profiling on a64 remains the open, optional step.
 
+      benchmark_core on the same Xeon (2026-07-18, both rebuilt at
+      100M, median of 7) FLIPS the ordering: slow32-dbt 0.70 s /
+      4.07 BIPS vs rv32-run 0.81 s / 3.11 BIPS — slow32-dbt ~31%
+      faster per guest instruction on the kernels, on the same box
+      where dbase had us ahead by 16%. So the translator comparison is
+      a function of (host, workload); no constant exists. Our
+      published "6.2 BIPS on a modern x86-64 host" also does not
+      reproduce there (3.11) — quote BIPS with the machine, the build
+      size, and the date. Also found: our interpreter counts
+      2,518,751,041 for this build while the DBT stat says
+      2,493,751,040 — Δ = 25,000,001 = mem_iters+1, one fused
+      instruction per mem-loop iteration counted differently. Worth
+      deciding which counter is architecturally right.
+
       DO NOT compare BIPS against slow32-dbt's "9.2/9.5" figure: that
       is its **x86-64** number. On Apple Silicon slow32-dbt is 7.50,
       and slow-32's docs/EMULATORS.md "~6 BIPS (Apple Silicon)" is
