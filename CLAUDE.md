@@ -157,7 +157,7 @@ riscv/
 │   ├── include/           # C headers (26 files: stdio.h, stdlib.h, dirent.h, etc.)
 │   └── src/               # libc implementation (17 C modules + 4 asm)
 ├── examples/              # Test and benchmark programs
-├── tests/                 # Core runtime regression tests (8 suites)
+├── tests/                 # Core runtime regression tests (9 suites)
 ├── lua/                   # Lua 5.4 interpreter port (11 tests)
 ├── sbasic/                # SBASIC interpreter port (43 tests)
 ├── lisp/                  # Scheme interpreter port (17 tests)
@@ -189,6 +189,15 @@ riscv64-unknown-elf-gcc -march=rv32imfd -mabi=ilp32d -O2 -ffreestanding -nostdli
 
 # Run it (interpreter mode, for debugging)
 ./dbt/rv32-run -i hello.elf
+```
+
+The Makefile picks the backend via `uname -m`, but on Apple Silicon the
+x86-64 backend can be built and tested locally under Rosetta:
+
+```bash
+cd dbt && cc -arch x86_64 -O2 -o /tmp/rv32-run-x64 \
+    main.c elf_loader.c dbt_common.c dbt_x64.c interp.c shadow.c
+arch -x86_64 /tmp/rv32-run-x64 ../tests/test-csr.elf
 ```
 
 ## Runtime Library
@@ -260,10 +269,22 @@ touching runtime/ or the ECALL layer. The .elf files are gitignored.
 - [x] ECALL service layer (21 syscalls)
 - [x] Runtime libc (21 modules, 26 headers)
 - [x] RV32F/D floating-point extensions (interpreter + JIT)
-- [x] FP test suite (50 tests)
-- [x] 8 ported programs; full sweep 2026-07-16: core 8/8, lua 11/11,
+- [x] FP test suite (50 tests) + FCLASS/FCVT edge cases
+      (examples/test_fclass_fcvt.c, 43 cases)
+- [x] Soft FCLASS and FCVT.W* shared across interpreter, shadow, and
+      both JITs (rv32_fclass_*/rv32_fcvt_* in dbt_common.c) — NaN,
+      overflow, and unsigned-negative edges match RISC-V instead of
+      host-native convert quirks (x86 indefinite 0x80000000, a64 NaN→0)
+- [x] Inline fcsr/fflags/frm CSR RMW in both JIT backends. Beware the
+      csrrw rd==rs1 swap: rs1 must be read BEFORE rd's cache slot is
+      written — both backends got this wrong (fcsr rewrote its own old
+      value) until 2026-08-08; tests/test-csr.c pins the semantics
+- [x] Host services hardened: shared rv32_handle_ecall for JIT and
+      interpreter (no more -i drift on open flags/dirops), guest paths
+      require an in-bounds NUL, bounds checks are uint32-wrap-proof
+- [x] 8 ported programs; full sweep 2026-08-08: core 9/9, lua 11/11,
       lisp 17/17, sbasic 42/43 (1 skip), prolog 16/16, zork 3/3,
-      nano 43/43, dbase 102/102, forth 22/22 — 265 tests
+      nano 43/43, dbase 102/102, forth 22/22 — 266 tests
 - [x] AArch64 host backend (`dbt_a64.c`): trampoline, integer + FP
       translator, block chaining, intrinsic stubs, LUI/AUIPC fusion,
       SLT+branch fusion, 8-slot LRU integer register cache (X22-X28 +
@@ -272,7 +293,7 @@ touching runtime/ or the ECALL layer. The .elf files are gitignored.
       iteration), 8-slot LRU FP register cache (D8-D15) for doubles,
       and native-libm intrinsic stubs for 20 transcendental functions
       (sin/cos/tan/exp/log/sqrt/pow/atan2/...). All suites pass
-      (265 tests, 2026-07-16). benchmark_core: **~9.1-9.3 BIPS on
+      (266 tests, 2026-08-08). benchmark_core: **~9.1-9.3 BIPS on
       a64** (2.494 G instructions in 0.27 s; 400M-iter run confirms at
       ~9.975 G in 1.06 s) — ~17x over the interpreter (~530 MIPS).
 
