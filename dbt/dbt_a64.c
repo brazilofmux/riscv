@@ -1621,20 +1621,25 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                     emit_and_w32_imm(&e, A_S1, A_S1, 0xFF);
                 }
 
-                if (insn.rd != 0) {
-                    a64_reg_t rd = rc_write(&e, &rc, insn.rd);
-                    emit_mov_w32_w32(&e, rd, A_S1);
-                }
-
-                /* Compute new field value in W11 (A_S2) if the write fires. */
-                if (op == 1 || insn.rs1 != 0 || is_imm) {
+                /* Capture the write source into W11 (A_S2) BEFORE rd is
+                 * written — rd may alias rs1 (csrrw t0, fcsr, t0 swaps). */
+                int csr_writes = (op == 1 || insn.rs1 != 0 || is_imm);
+                if (csr_writes) {
                     if (is_imm) {
                         emit_mov_w32_imm32(&e, A_S2, (uint32_t)insn.rs1);
                     } else {
                         a64_reg_t rs1 = rc_read(&e, &rc, insn.rs1);
                         emit_mov_w32_w32(&e, A_S2, rs1);
                     }
+                }
 
+                if (insn.rd != 0) {
+                    a64_reg_t rd = rc_write(&e, &rc, insn.rd);
+                    emit_mov_w32_w32(&e, rd, A_S1);
+                }
+
+                /* Compute new field value in W11 (A_S2) if the write fires. */
+                if (csr_writes) {
                     if (op == 2) {
                         /* RS: new = old | src */
                         emit_orr_w32(&e, A_S2, A_S2, A_S1);

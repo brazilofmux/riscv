@@ -1989,19 +1989,19 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                     emit_and_r_imm(&e, X64_RCX, 0xFF);
                 }
 
-                /* Write old CSR value to rd (if rd != 0) */
-                if (insn.rd)
-                    rc_store(&e, &rc, insn.rd, X64_RCX);
-
-                /* Compute new value in EDX */
+                /* Load rs1 into EDX BEFORE rd is written — rd may alias
+                 * rs1 (csrrw t0, fcsr, t0 swaps). */
                 uint32_t src_val;
                 if (is_imm) {
                     src_val = insn.rs1;  /* 5-bit zimm */
                 } else {
-                    /* Load rs1 into EDX */
                     rc_load(&e, &rc, X64_RDX, insn.rs1);
                     src_val = 0; /* not used for register ops */
                 }
+
+                /* Write old CSR value to rd (if rd != 0) */
+                if (insn.rd)
+                    rc_store(&e, &rc, insn.rd, X64_RCX);
 
                 /* Only modify CSR if rs1 != 0 (for RS/RC) or always (for RW) */
                 if (op == 1 || insn.rs1 != 0 || is_imm) {

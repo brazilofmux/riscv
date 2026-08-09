@@ -1,0 +1,18 @@
+PASS fcsr roundtrip
+PASS fflags field
+PASS frm field
+PASS csrrw swap old
+PASS csrrw swap new
+PASS csrrs old
+PASS csrrs new
+PASS csrrc old
+PASS csrrc new
+PASS csrrs x0 read
+PASS csrrs x0 nowrite
+PASS csrrwi old
+PASS csrrci old
+PASS csrrsi old
+PASS imm forms fcsr
+PASS frm write merged
+PASS fflags preserved
+=== test-csr: all pass ===
