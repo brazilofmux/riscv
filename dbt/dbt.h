@@ -151,6 +151,13 @@ int dbt_init(dbt_state_t *dbt, rv32_binary_t *bin);
 int dbt_run(dbt_state_t *dbt);
 void dbt_cleanup(dbt_state_t *dbt);
 
+/* Shared host ECALL service (JIT dispatcher + interpreter).
+ * x[10..17] are a0..a7; results go in x[10].
+ * Returns -2 to continue execution, otherwise a guest exit code
+ * (from ECALL exit) or -1 on unhandled/fatal. report_pc is only
+ * used in error messages. */
+int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc);
+
 /* ---- Arch-specific hooks (provided by dbt_x64.c or dbt_a64.c) ----
  *
  * dbt_translate_block: translate the guest block starting at guest_pc and

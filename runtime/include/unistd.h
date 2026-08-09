@@ -30,7 +30,7 @@ int isatty(int fd);
 
 char         *getcwd(char *buf, size_t size);
 int           chdir(const char *path);
-int           mkdir(const char *path, int mode);
+/* mkdir is declared in <sys/stat.h> with mode_t — don't redeclare here. */
 int           rmdir(const char *path);
 unsigned int  sleep(unsigned int seconds);
 int           usleep(unsigned int usec);

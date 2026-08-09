@@ -1,47 +1,60 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-This repository contains a lightweight RV32IM execution stack centered on `dbt/`.
+Lightweight **RV32IMFD** execution stack: guest binaries on a freestanding
+libc, host runner with interpreter + dynamic binary translation.
 
-- `dbt/`: host-side runner (`rv32-run`) with ELF loading, interpreter fallback, and DBT pipeline.
-- `runtime/`: guest linker script plus runtime headers/sources under `runtime/include/` and `runtime/src/`.
-- `examples/`: guest programs used for bring-up and benchmarking (`hello.c`, `benchmark_core.c`, `test_calls.c`).
-- `forth/`: minimal RV32IM Forth kernel (`kernel.s`, `prelude.fth`) and its own build/run flow.
-- `docs/` and `scripts/`: reserved for documentation and helper tooling.
+- `dbt/`: host tool (`rv32-run`) — ELF load, interpreter, JIT (x64/a64),
+  shadow verifier (`-V`), shared ECALL layer.
+- `runtime/`: guest linker script, crt0, headers (`runtime/include/`),
+  libc sources (`runtime/src/`).
+- `examples/`: bare-metal and libc bring-up programs (`hello.c`,
+  `benchmark_core.c`, `test_fp.c`, …).
+- `tests/`: core runtime regression suite (8 tests).
+- Ports with their own suites: `lua/`, `lisp/`, `sbasic/`, `prolog/`,
+  `zork/`, `nano/`, `dbase/`, `forth/`.
+- `docs/`: design/write-ups. `CLAUDE.md` is the detailed architecture status.
 
-Keep generated artifacts (`*.o`, `*.elf`, `rv32-run`) out of version control.
+Keep generated artifacts (`*.o`, `*.elf`, `*.a`, `rv32-run`) out of version
+control (see `.gitignore`). Rebuild ported ELFs after runtime/ECALL changes.
 
 ## Build, Test, and Development Commands
-- `make` or `make -C dbt`: build the host binary translator/interpreter (`dbt/rv32-run`).
-- `make -C dbt clean`: remove DBT objects and binary.
-- `make -C forth`: assemble/link the Forth kernel ELF.
-- `make -C forth run`: pipe `forth/prelude.fth` into the kernel via `../dbt/rv32-run`.
-- Example guest compile:
-  `riscv32-unknown-elf-gcc -march=rv32im -mabi=ilp32 -nostdlib -T runtime/link.ld examples/hello.c -o examples/hello.elf`
-- Example execution:
-  `./dbt/rv32-run examples/hello.elf` (add `-i` for interpreter mode, `-s` for stats).
+- `make` or `make -C dbt`: build `dbt/rv32-run` (arch picked via `uname -m`).
+- `make -C runtime`: build guest `crt0.o` + `libc.a`.
+- `make test`: core runtime suite (`tests/run-tests.sh`).
+- Port suites: `bash <port>/tests/run-tests.sh` after building that port.
+- Example guest compile (with libc):
+  ```
+  riscv64-unknown-elf-gcc -march=rv32imfd -mabi=ilp32d -O2 \
+      -ffreestanding -nostdlib -Iruntime/include \
+      -T runtime/link.ld runtime/crt0.o examples/hello.c \
+      runtime/libc.a -lgcc -o examples/hello.elf
+  ```
+- Bare-metal benchmark (own `_start`, no crt0):
+  ```
+  riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -nostdlib -O2 \
+      -T runtime/link.ld examples/benchmark_core.c \
+      -o examples/benchmark_core.elf
+  ```
+- Run: `./dbt/rv32-run examples/hello.elf`
+  - `-i` interpreter, `-s` stats, `-V` lockstep shadow verify.
 
 ## Coding Style & Naming Conventions
-Use C11-style, warning-clean code with the existing flags (`-Wall -Wextra -O2 -g`).
+C11-style, warning-clean with existing flags (`-Wall -Wextra -O2 -g`).
 
 - Indentation: 4 spaces, no tabs.
-- Naming: `snake_case` for functions/variables; `UPPER_CASE` for macros/constants.
-- Keep headers focused (`*.h`) and pair new modules with matching source files.
-- Prefer small, explicit helpers for decode/execute logic and bounds checks.
+- Naming: `snake_case` for functions/variables; `UPPER_CASE` for macros.
+- Pair new modules with matching headers; keep decode/emit helpers small.
 
 ## Testing Guidelines
-There is no formal test framework yet. Validate changes with runnable guest binaries:
-
-1. Build: `make -C dbt`
-2. Run smoke tests: `./dbt/rv32-run examples/hello.elf`
-3. Cross-check behavior in interpreter mode: `./dbt/rv32-run -i examples/hello.elf`
-4. For performance-sensitive changes, compare `-s` stats before/after.
-
-Add new regression inputs under `examples/` with descriptive names (for example, `test_branch_edges.c`).
+1. `make -C dbt && make -C runtime && make test`
+2. Smoke: `./dbt/rv32-run examples/benchmark_core.elf` (and `-i` for ECALL parity).
+3. For JIT correctness sweeps: `./dbt/rv32-run -V <elf>` (forces unchained blocks).
+4. Performance: wall time + interpreter `-s` icount for BIPS; quote machine/date.
 
 ## Commit & Pull Request Guidelines
-Follow the existing commit tone: short, imperative, technically specific (example: `dbt: fix jalr cache miss handling`).
+Short, imperative, technically specific (e.g. `dbt: fix jalr cache miss handling`).
 
-- Keep commits scoped to one logical change.
-- PRs should include: purpose, key implementation notes, validation commands run, and observed output deltas.
-- Link related issues and call out ISA/ABI assumptions (RV32IM, no RVC) when relevant.
+- One logical change per commit.
+- PRs: purpose, key notes, commands run, output deltas; call out RV32IMFD /
+  no-RVC / ECALL assumptions when relevant.

@@ -1,13 +1,17 @@
 /* dbt_a64.c — AArch64 code emission for the RV32IMFD DBT.
  *
- * Stage: P6 baseline + register cache. Integer GPRs are kept in an LRU
- * cache of host registers within each translated block; reads from cached
- * regs become register-to-register moves (or nothing — the slot already
- * holds the value); writes become in-cache and are flushed to ctx only at
- * block exit. Most ALU loops now run with zero ctx round-trips on the hot
- * path. Block chaining, intrinsic stubs, and LUI/AUIPC fusion are still
- * here. RAS, AUIPC+JALR fusion, SLT+branch fusion, diamond merge, and
- * superblocks remain TODO.
+ * Full RV32IMFD integer + FP translator with:
+ *   - 8-slot LRU integer register cache (X22-X28 + X15)
+ *   - 8-slot LRU FP doubles cache (D8-D15)
+ *   - Block chaining via inline cache probes
+ *   - Superblocks with per-side-exit cache snapshots
+ *   - Self-loop warm-entry (skips cold int-cache loads on back-edge)
+ *   - LUI/AUIPC+ADDI fusion, SLT+branch fusion
+ *   - Intrinsic stubs (memcpy/memmove/memset/strlen + 20 libm funcs)
+ *   - Inline fcsr/fflags/frm CSR RMW
+ *
+ * Measured neutral-to-negative on this host (chained exit is too cheap):
+ *   RAS, diamond merge, AUIPC/LUI+JALR/LOAD/STORE fusion — still x64-only.
  *
  * Host register convention (matches the trampoline below):
  *   X19 = pointer to rv32_ctx_t           (callee-saved, set by trampoline)
@@ -1540,9 +1544,7 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
         case OP_SYSTEM: {
             /* funct3==0: ECALL (imm==0) or EBREAK (imm==1). The dispatcher
              * recognizes the encoded next_pc tags `(pc+4)|1` for ECALL and
-             * `(pc+4)|2` for EBREAK. funct3!=0 is a CSR op — for the
-             * microcontroller profile we accept them as no-ops and
-             * advance, returning 0 to rd. */
+             * `(pc+4)|2` for EBREAK. */
             if (insn.funct3 == 0) {
                 rc_flush(&e, &rc);
                 fp_rc_flush(&e, &fc);
@@ -1553,13 +1555,91 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                     exit_with_pc(&e, advanced | 1u);
                 goto done;
             }
-            /* CSR — fake a 0 read, ignore writes. */
-            if (insn.rd != 0) {
-                a64_reg_t rd = rc_write(&e, &rc, insn.rd);
-                emit_mov_w32_imm32(&e, rd, 0);
+            /* CSR: inline fflags (0x001) / frm (0x002) / fcsr (0x003).
+             * Matches interpreter and x64 backend. */
+            if (insn.funct3 >= 1 && insn.funct3 <= 7) {
+                uint32_t csr_addr = (uint32_t)insn.imm & 0xFFF;
+                int is_imm = (insn.funct3 >= 5);
+                int op = is_imm ? (insn.funct3 - 4) : insn.funct3; /* 1=RW 2=RS 3=RC */
+
+                if (csr_addr != 0x001 && csr_addr != 0x002 && csr_addr != 0x003) {
+                    rc_flush(&e, &rc);
+                    fp_rc_flush(&e, &fc);
+                    exit_with_pc(&e, pc | 2u);
+                    goto done;
+                }
+
+                /* Load fcsr into W9 (A_S0). */
+                emit_ldr_w32_imm(&e, A_S0, A_CTX, CTX_FCSR_OFF);
+
+                /* Extract field into W10 (A_S1) — old value for rd. */
+                emit_mov_w32_w32(&e, A_S1, A_S0);
+                if (csr_addr == 0x001) {
+                    emit_and_w32_imm(&e, A_S1, A_S1, 0x1F);
+                } else if (csr_addr == 0x002) {
+                    emit_lsr_w32_imm(&e, A_S1, A_S1, 5);
+                    emit_and_w32_imm(&e, A_S1, A_S1, 0x7);
+                } else {
+                    emit_and_w32_imm(&e, A_S1, A_S1, 0xFF);
+                }
+
+                if (insn.rd != 0) {
+                    a64_reg_t rd = rc_write(&e, &rc, insn.rd);
+                    emit_mov_w32_w32(&e, rd, A_S1);
+                }
+
+                /* Compute new field value in W11 (A_S2) if the write fires. */
+                if (op == 1 || insn.rs1 != 0 || is_imm) {
+                    if (is_imm) {
+                        emit_mov_w32_imm32(&e, A_S2, (uint32_t)insn.rs1);
+                    } else {
+                        a64_reg_t rs1 = rc_read(&e, &rc, insn.rs1);
+                        emit_mov_w32_w32(&e, A_S2, rs1);
+                    }
+
+                    if (op == 2) {
+                        /* RS: new = old | src */
+                        emit_orr_w32(&e, A_S2, A_S2, A_S1);
+                    } else if (op == 3) {
+                        /* RC: new = old & ~src */
+                        emit_mvn_w32(&e, A_S2, A_S2);
+                        emit_and_w32(&e, A_S2, A_S1, A_S2);
+                    }
+                    /* op==1: A_S2 already holds src */
+
+                    /* Merge field back into fcsr in A_S0. */
+                    if (csr_addr == 0x001) {
+                        /* clear [4:0], OR (new & 0x1F) */
+                        if (!emit_and_w32_imm(&e, A_S0, A_S0, (uint32_t)~0x1Fu)) {
+                            emit_mov_w32_imm32(&e, A_S3, (uint32_t)~0x1Fu);
+                            emit_and_w32(&e, A_S0, A_S0, A_S3);
+                        }
+                        emit_and_w32_imm(&e, A_S2, A_S2, 0x1F);
+                    } else if (csr_addr == 0x002) {
+                        if (!emit_and_w32_imm(&e, A_S0, A_S0, (uint32_t)~0xE0u)) {
+                            emit_mov_w32_imm32(&e, A_S3, (uint32_t)~0xE0u);
+                            emit_and_w32(&e, A_S0, A_S0, A_S3);
+                        }
+                        emit_and_w32_imm(&e, A_S2, A_S2, 0x7);
+                        emit_lsl_w32_imm(&e, A_S2, A_S2, 5);
+                    } else {
+                        if (!emit_and_w32_imm(&e, A_S0, A_S0, (uint32_t)~0xFFu)) {
+                            emit_mov_w32_imm32(&e, A_S3, (uint32_t)~0xFFu);
+                            emit_and_w32(&e, A_S0, A_S0, A_S3);
+                        }
+                        emit_and_w32_imm(&e, A_S2, A_S2, 0xFF);
+                    }
+                    emit_orr_w32(&e, A_S0, A_S0, A_S2);
+                    emit_str_w32_imm(&e, A_S0, A_CTX, CTX_FCSR_OFF);
+                }
+                pc += 4;
+                continue;
             }
-            pc += 4;
-            continue;
+            /* Unknown SYSTEM — EBREAK */
+            rc_flush(&e, &rc);
+            fp_rc_flush(&e, &fc);
+            exit_with_pc(&e, pc | 2u);
+            goto done;
         }
 
         default: {

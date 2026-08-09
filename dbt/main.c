@@ -37,8 +37,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "  -s       Show stats on exit\n");
     fprintf(stderr, "  -V       Verify mode — run a shadow interpreter in lockstep with the JIT\n");
     fprintf(stderr, "  -h       Show this help\n");
-    fprintf(stderr, "\nRV32IM microcontroller binary executor.\n");
-    fprintf(stderr, "Accepts standard ELF32 RISC-V executables (RV32IM, no RVC).\n");
+    fprintf(stderr, "\nRV32IMFD microcontroller binary executor.\n");
+    fprintf(stderr, "Accepts standard ELF32 RISC-V executables (RV32IMFD, no RVC).\n");
     fprintf(stderr, "Arguments after the ELF file are passed to the guest program.\n");
 }
 

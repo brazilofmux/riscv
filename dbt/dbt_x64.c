@@ -1815,9 +1815,12 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
         case OP_FP_LOAD: case OP_FP_STORE: case OP_FP:
         case OP_FMADD: case OP_FMSUB: case OP_FNMSUB: case OP_FNMADD:
             if (translate_one(dbt, &e, &rc, &fc, &insn, pc) < 0) {
+                /* Unhandled (e.g. FCLASS) — tag as EBREAK so the
+                 * dispatcher stops instead of re-entering this block
+                 * forever. There is no interpreter handoff path. */
                 rc_flush(&e, &rc);
                 fp_rc_flush(&e, &fc);
-                emit_exit_with_pc(&e, pc);
+                emit_exit_with_pc(&e, pc | 2);
                 goto done;
             }
             pc += 4;
@@ -1917,10 +1920,10 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 /* op: 1=RW, 2=RS, 3=RC */
 
                 if (csr_addr != 0x001 && csr_addr != 0x002 && csr_addr != 0x003) {
-                    /* Unknown CSR — exit to interpreter */
+                    /* Unknown CSR — EBREAK tag (no interpreter handoff) */
                     rc_flush(&e, &rc);
                     fp_rc_flush(&e, &fc);
-                    emit_exit_with_pc(&e, pc);
+                    emit_exit_with_pc(&e, pc | 2);
                     goto done;
                 }
 
@@ -1996,16 +1999,16 @@ uint8_t *dbt_translate_block(dbt_state_t *dbt, uint32_t guest_pc) {
                 pc += 4;
                 break;
             }
-            /* Unknown system instruction */
+            /* Unknown system instruction — EBREAK tag */
             rc_flush(&e, &rc);
             fp_rc_flush(&e, &fc);
-            emit_exit_with_pc(&e, pc);
+            emit_exit_with_pc(&e, pc | 2);
             goto done;
 
         default:
             rc_flush(&e, &rc);
             fp_rc_flush(&e, &fc);
-            emit_exit_with_pc(&e, pc);
+            emit_exit_with_pc(&e, pc | 2);
             goto done;
         }
     }

@@ -10,6 +10,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <signal.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/time.h>
 
@@ -60,10 +61,25 @@ int closedir(DIR *dirp) {
 int  dirfd(DIR *dirp)     { return dirp ? dirp->handle : -1; }
 void rewinddir(DIR *dirp) { (void)dirp; /* not supported by the ECALL */ }
 
-/* ---- sleep ---- */
+/* ---- sleep (via nanosleep ECALL 101) ---- */
 
-unsigned int sleep(unsigned int seconds) { (void)seconds; return 0; }
-int          usleep(unsigned int usec)   { (void)usec; return 0; }
+extern int _nanosleep(const struct timespec *req, struct timespec *rem);
+
+unsigned int sleep(unsigned int seconds) {
+    struct timespec req = { (long)seconds, 0 };
+    struct timespec rem = { 0, 0 };
+    if (_nanosleep(&req, &rem) == 0)
+        return 0;
+    /* Interrupted: return remaining whole seconds (POSIX). */
+    return (unsigned int)(rem.tv_sec > 0 ? rem.tv_sec : 0);
+}
+
+int usleep(unsigned int usec) {
+    struct timespec req;
+    req.tv_sec  = (long)(usec / 1000000u);
+    req.tv_nsec = (long)(usec % 1000000u) * 1000L;
+    return _nanosleep(&req, NULL);
+}
 
 /* ---- signals (no real delivery — handlers never fire) ---- */
 

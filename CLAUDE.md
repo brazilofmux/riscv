@@ -36,7 +36,7 @@ Guest programs invoke host services through the RISC-V `ecall` instruction using
 | 63 | read | a0=fd, a1=buf, a2=len |
 | 64 | write | a0=fd, a1=buf, a2=len |
 | 79 | fstatat | a1=path, a2=statbuf, a3=flags |
-| 80 | fstat | stub, returns -1 |
+| 80 | fstat | a0=fd, a1=statbuf (marshals ino/mode/size/times) |
 | 90 | opendir | a0=path → directory handle (>=0) or -1 |
 | 91 | readdir | a0=handle, a1=struct dirent buf → 0 / -1 |
 | 92 | closedir | a0=handle |
@@ -207,7 +207,8 @@ The runtime provides a comprehensive freestanding libc:
 - **unistd**: nanosleep/usleep/sleep (ECALL 101), unlink, ftruncate, mkdir, stat
 - **dtoa**: David Gay's algorithm for precise float-to-string
 
-Intentional stubs (acceptable for microcontroller profile): fstat-on-fd, brk, signal, locale.
+Intentional stubs (acceptable for microcontroller profile): brk, signal, locale,
+getcwd (always "/"), rename/rmdir/chdir/access.
 
 Guest binaries statically link this libc, so **checked-out ELFs go stale
 when the runtime or its headers change** (e.g. the dirent layout) —
@@ -337,11 +338,9 @@ touching runtime/ or the ECALL layer. The .elf files are gitignored.
       a function of (host, workload); no constant exists. Our
       published "6.2 BIPS on a modern x86-64 host" also does not
       reproduce there (3.11) — quote BIPS with the machine, the build
-      size, and the date. Also found: our interpreter counts
-      2,518,751,041 for this build while the DBT stat says
-      2,493,751,040 — Δ = 25,000,001 = mem_iters+1, one fused
-      instruction per mem-loop iteration counted differently. Worth
-      deciding which counter is architecturally right.
+      size, and the date. Guest icount for BIPS comes from interpreter
+      `-i -s` only (DBT `-s` reports block-cache stats, not instructions).
+      For the default `BENCH_ITERS=100M` build that is 2,493,751,040.
 
       DO NOT compare BIPS against slow32-dbt's "9.2/9.5" figure: that
       is its **x86-64** number. On Apple Silicon slow32-dbt is 7.50,

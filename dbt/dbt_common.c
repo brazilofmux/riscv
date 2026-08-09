@@ -107,165 +107,194 @@ static void cache_insert(dbt_state_t *dbt, uint32_t pc, uint8_t *code) {
     e->native_code = code;
 }
 
-/* ---- ECALL handler ---- */
+/* ---- ECALL handler (shared by JIT and interpreter) ---- */
 
-static int handle_ecall(dbt_state_t *dbt) {
-    rv32_ctx_t *ctx = &dbt->ctx;
-    uint32_t syscall_num = ctx->x[17];
+/* Guest ILP32 struct stat layout (runtime/include/sys/stat.h):
+ *   st_ino@8, st_mode@16, st_size@40, st_atime@64, st_mtime@68, st_ctime@72.
+ * Buffer is 80 bytes including tail padding. */
+static void marshal_guest_stat(uint8_t *dst, const struct stat *st) {
+    memset(dst, 0, 80);
+    uint64_t ino = (uint64_t)st->st_ino;
+    uint32_t mode32 = (uint32_t)st->st_mode;
+    int64_t size64 = (int64_t)st->st_size;
+    uint32_t at = (uint32_t)st->st_atime;
+    uint32_t mt = (uint32_t)st->st_mtime;
+    uint32_t ct = (uint32_t)st->st_ctime;
+    memcpy(dst + 8, &ino, 8);
+    memcpy(dst + 16, &mode32, 4);
+    memcpy(dst + 40, &size64, 8);
+    memcpy(dst + 64, &at, 4);
+    memcpy(dst + 68, &mt, 4);
+    memcpy(dst + 72, &ct, 4);
+}
+
+/* Resolve a guest path pointer; requires a NUL within guest memory. */
+static const char *guest_c_string(rv32_binary_t *bin, uint32_t addr) {
+    if (addr >= bin->memory_size)
+        return NULL;
+    size_t max = bin->memory_size - addr;
+    const char *p = (const char *)(bin->memory + addr);
+    if (!memchr(p, '\0', max))
+        return NULL;
+    return p;
+}
+
+int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc) {
+    uint32_t syscall_num = x[17];
 
     switch (syscall_num) {
     case 93:  /* exit */
-        return (int)(int32_t)ctx->x[10];
+        return (int)(int32_t)x[10];
 
     case 64:  /* write(fd, buf, len) */
         {
-            uint32_t fd  = ctx->x[10];
-            uint32_t buf = ctx->x[11];
-            uint32_t len = ctx->x[12];
-            if (buf + len > dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+            uint32_t fd  = x[10];
+            uint32_t buf = x[11];
+            uint32_t len = x[12];
+            if (buf + len > bin->memory_size) {
+                x[10] = (uint32_t)-1;
                 break;
             }
-            ssize_t written = write(fd, dbt->bin->memory + buf, len);
-            ctx->x[10] = (uint32_t)(int32_t)written;
+            ssize_t written = write(fd, bin->memory + buf, len);
+            x[10] = (uint32_t)(int32_t)written;
         }
         break;
 
     case 63:  /* read(fd, buf, len) */
         {
-            uint32_t fd  = ctx->x[10];
-            uint32_t buf = ctx->x[11];
-            uint32_t len = ctx->x[12];
-            if (buf + len > dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+            uint32_t fd  = x[10];
+            uint32_t buf = x[11];
+            uint32_t len = x[12];
+            if (buf + len > bin->memory_size) {
+                x[10] = (uint32_t)-1;
                 break;
             }
-            ssize_t nread = read(fd, dbt->bin->memory + buf, len);
-            ctx->x[10] = (uint32_t)(int32_t)nread;
+            ssize_t nread = read(fd, bin->memory + buf, len);
+            x[10] = (uint32_t)(int32_t)nread;
         }
         break;
 
     case 56:  /* openat(dirfd, pathname, flags, mode) */
         {
-            int32_t dirfd = (int32_t)ctx->x[10];
-            uint32_t path_addr = ctx->x[11];
-            int flags = (int)ctx->x[12];
-            int mode = (int)ctx->x[13];
-            if (path_addr >= dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+            int32_t dirfd = (int32_t)x[10];
+            const char *pathname = guest_c_string(bin, x[11]);
+            int flags = (int)x[12];
+            int mode = (int)x[13];
+            if (!pathname) {
+                x[10] = (uint32_t)-1;
                 break;
             }
-            const char *pathname = (const char *)(dbt->bin->memory + path_addr);
             if (dirfd == -100) dirfd = AT_FDCWD;
             int result = openat(dirfd, pathname, translate_open_flags(flags), mode);
-            ctx->x[10] = (uint32_t)(int32_t)result;
+            x[10] = (uint32_t)(int32_t)result;
         }
         break;
 
     case 57:  /* close(fd) */
         {
-            int fd = (int)ctx->x[10];
+            int fd = (int)x[10];
             /* Don't close stdin/stdout/stderr */
-            if (fd <= 2) { ctx->x[10] = 0; break; }
+            if (fd <= 2) { x[10] = 0; break; }
             int result = close(fd);
-            ctx->x[10] = (uint32_t)(int32_t)result;
+            x[10] = (uint32_t)(int32_t)result;
         }
         break;
 
     case 62:  /* lseek(fd, offset, whence) */
         {
-            int fd = (int)ctx->x[10];
-            off_t offset = (off_t)(int32_t)ctx->x[11];
-            int whence = (int)ctx->x[12];
+            int fd = (int)x[10];
+            off_t offset = (off_t)(int32_t)x[11];
+            int whence = (int)x[12];
             off_t result = lseek(fd, offset, whence);
-            ctx->x[10] = (uint32_t)(int32_t)result;
+            x[10] = (uint32_t)(int32_t)result;
         }
         break;
 
-    case 35:  /* unlinkat(dirfd, pathname, flags) */
+    case 35:  /* unlinkat(dirfd, pathname, flags) — path only; dirfd ignored */
         {
-            uint32_t path_addr = ctx->x[11];
-            if (path_addr >= dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+            const char *pathname = guest_c_string(bin, x[11]);
+            if (!pathname) {
+                x[10] = (uint32_t)-1;
                 break;
             }
-            const char *pathname = (const char *)(dbt->bin->memory + path_addr);
             int result = unlink(pathname);
-            ctx->x[10] = (uint32_t)(int32_t)result;
+            x[10] = (uint32_t)(int32_t)result;
         }
         break;
 
     case 46:  /* ftruncate(fd, length) */
         {
-            int fd = (int)ctx->x[10];
-            off_t length = (off_t)(int32_t)ctx->x[11];
+            int fd = (int)x[10];
+            off_t length = (off_t)(int32_t)x[11];
             int result = ftruncate(fd, length);
-            ctx->x[10] = (uint32_t)(int32_t)result;
+            x[10] = (uint32_t)(int32_t)result;
         }
         break;
 
-    case 34:  /* mkdirat(dirfd, pathname, mode) */
+    case 34:  /* mkdirat(dirfd, pathname, mode) — path only; dirfd ignored */
         {
-            uint32_t path_addr = ctx->x[11];
-            if (path_addr >= dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+            const char *pathname = guest_c_string(bin, x[11]);
+            int mode = (int)x[12];
+            if (!pathname) {
+                x[10] = (uint32_t)-1;
                 break;
             }
-            const char *pathname = (const char *)(dbt->bin->memory + path_addr);
-            int mode = (int)ctx->x[12];
             int result = mkdir(pathname, mode);
-            ctx->x[10] = (uint32_t)(int32_t)result;
+            x[10] = (uint32_t)(int32_t)result;
         }
         break;
 
     case 79:  /* fstatat(dirfd, pathname, statbuf, flags) */
         {
-            int32_t dirfd = (int32_t)ctx->x[10];
-            uint32_t path_addr = ctx->x[11];
-            uint32_t buf_addr = ctx->x[12];
-            int flags = (int)ctx->x[13];
-            if (path_addr >= dbt->bin->memory_size || buf_addr + 80 > dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+            int32_t dirfd = (int32_t)x[10];
+            const char *pathname = guest_c_string(bin, x[11]);
+            uint32_t buf_addr = x[12];
+            int flags = (int)x[13];
+            if (!pathname || buf_addr + 80 > bin->memory_size) {
+                x[10] = (uint32_t)-1;
                 break;
             }
-            const char *pathname = (const char *)(dbt->bin->memory + path_addr);
             if (dirfd == -100) dirfd = AT_FDCWD;
             struct stat host_st;
             int result = fstatat(dirfd, pathname, &host_st, flags);
-            if (result == 0) {
-                /* Marshal host stat to guest (ILP32: mode@16, size@40) */
-                uint8_t *dst = dbt->bin->memory + buf_addr;
-                memset(dst, 0, 80);
-                uint32_t mode32 = (uint32_t)host_st.st_mode;
-                int64_t size64 = (int64_t)host_st.st_size;
-                memcpy(dst + 16, &mode32, 4);  /* st_mode */
-                memcpy(dst + 40, &size64, 8);  /* st_size */
-            }
-            ctx->x[10] = (uint32_t)(int32_t)result;
+            if (result == 0)
+                marshal_guest_stat(bin->memory + buf_addr, &host_st);
+            x[10] = (uint32_t)(int32_t)result;
         }
         break;
 
-    case 80:  /* fstat — stub, return -1 */
-        ctx->x[10] = (uint32_t)-1;
+    case 80:  /* fstat(fd, statbuf) */
+        {
+            int fd = (int)x[10];
+            uint32_t buf_addr = x[11];
+            if (buf_addr + 80 > bin->memory_size) {
+                x[10] = (uint32_t)-1;
+                break;
+            }
+            struct stat host_st;
+            int result = fstat(fd, &host_st);
+            if (result == 0)
+                marshal_guest_stat(bin->memory + buf_addr, &host_st);
+            x[10] = (uint32_t)(int32_t)result;
+        }
         break;
 
     case 90:  /* opendir(path) → handle (>=0) or -1 */
         {
-            uint32_t path_addr = ctx->x[10];
-            if (path_addr >= dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+            const char *pathname = guest_c_string(bin, x[10]);
+            if (!pathname) {
+                x[10] = (uint32_t)-1;
                 break;
             }
-            const char *pathname = (const char *)(dbt->bin->memory + path_addr);
             DIR *d = opendir(pathname);
-            if (!d) { ctx->x[10] = (uint32_t)-1; break; }
+            if (!d) { x[10] = (uint32_t)-1; break; }
             int slot = dbt_dir_alloc(d);
             if (slot < 0) {
                 closedir(d);
-                ctx->x[10] = (uint32_t)-1;
+                x[10] = (uint32_t)-1;
                 break;
             }
-            ctx->x[10] = (uint32_t)slot;
+            x[10] = (uint32_t)slot;
         }
         break;
 
@@ -274,20 +303,20 @@ static int handle_ecall(dbt_state_t *dbt) {
                * at +8, 256-byte d_name at +9. Total written = 265 bytes;
                * sizeof on the guest is 272 (8-aligned tail padding). */
         {
-            int slot = (int)(int32_t)ctx->x[10];
-            uint32_t buf_addr = ctx->x[11];
+            int slot = (int)(int32_t)x[10];
+            uint32_t buf_addr = x[11];
             if (slot < 0 || slot >= DBT_DIR_TABLE_SIZE || !g_dir_table[slot]
-                || buf_addr + 272 > dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+                || buf_addr + 272 > bin->memory_size) {
+                x[10] = (uint32_t)-1;
                 break;
             }
             errno = 0;
             struct dirent *e = readdir(g_dir_table[slot]);
             if (!e) {
-                ctx->x[10] = (errno == 0) ? (uint32_t)-1 : (uint32_t)-1;
+                x[10] = (uint32_t)-1;
                 break;
             }
-            uint8_t *dst = dbt->bin->memory + buf_addr;
+            uint8_t *dst = bin->memory + buf_addr;
             memset(dst, 0, 265);
             uint64_t ino = (uint64_t)e->d_ino;
             memcpy(dst + 0, &ino, 8);
@@ -300,20 +329,20 @@ static int handle_ecall(dbt_state_t *dbt) {
             if (nlen > 255) nlen = 255;
             memcpy(dst + 9, e->d_name, nlen);
             dst[9 + nlen] = '\0';
-            ctx->x[10] = 0;
+            x[10] = 0;
         }
         break;
 
     case 92:  /* closedir(handle) */
         {
-            int slot = (int)(int32_t)ctx->x[10];
+            int slot = (int)(int32_t)x[10];
             if (slot < 0 || slot >= DBT_DIR_TABLE_SIZE || !g_dir_table[slot]) {
-                ctx->x[10] = (uint32_t)-1;
+                x[10] = (uint32_t)-1;
                 break;
             }
             int rc = closedir(g_dir_table[slot]);
             g_dir_table[slot] = NULL;
-            ctx->x[10] = (uint32_t)(int32_t)rc;
+            x[10] = (uint32_t)(int32_t)rc;
         }
         break;
 
@@ -321,59 +350,59 @@ static int handle_ecall(dbt_state_t *dbt) {
                * Guest struct timespec: 4-byte tv_sec, 4-byte tv_nsec
                * (long is 32-bit on ILP32). */
         {
-            uint32_t req_addr = ctx->x[10];
-            uint32_t rem_addr = ctx->x[11];
-            if (req_addr + 8 > dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+            uint32_t req_addr = x[10];
+            uint32_t rem_addr = x[11];
+            if (req_addr + 8 > bin->memory_size) {
+                x[10] = (uint32_t)-1;
                 break;
             }
             uint32_t s32 = 0, ns32 = 0;
-            memcpy(&s32,  dbt->bin->memory + req_addr,     4);
-            memcpy(&ns32, dbt->bin->memory + req_addr + 4, 4);
+            memcpy(&s32,  bin->memory + req_addr,     4);
+            memcpy(&ns32, bin->memory + req_addr + 4, 4);
             struct timespec req = { (time_t)s32, (long)ns32 };
             struct timespec rem = { 0, 0 };
             int rc = nanosleep(&req, &rem);
-            if (rem_addr && rem_addr + 8 <= dbt->bin->memory_size) {
+            if (rem_addr && rem_addr + 8 <= bin->memory_size) {
                 uint32_t rs = (uint32_t)rem.tv_sec;
                 uint32_t rn = (uint32_t)rem.tv_nsec;
-                memcpy(dbt->bin->memory + rem_addr,     &rs, 4);
-                memcpy(dbt->bin->memory + rem_addr + 4, &rn, 4);
+                memcpy(bin->memory + rem_addr,     &rs, 4);
+                memcpy(bin->memory + rem_addr + 4, &rn, 4);
             }
-            ctx->x[10] = (uint32_t)(int32_t)rc;
+            x[10] = (uint32_t)(int32_t)rc;
         }
         break;
 
     case 214: /* brk — not needed, return 0 */
-        ctx->x[10] = 0;
+        x[10] = 0;
         break;
 
-    case 403: /* clock_gettime(clockid, tp_addr) */
+    case 403: /* clock_gettime(clockid, tp_addr) — clockid ignored */
         {
-            uint32_t tp_addr = ctx->x[11];
-            if (tp_addr + 8 > dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+            uint32_t tp_addr = x[11];
+            if (tp_addr + 8 > bin->memory_size) {
+                x[10] = (uint32_t)-1;
                 break;
             }
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
             uint32_t sec = (uint32_t)ts.tv_sec;
             uint32_t nsec = (uint32_t)ts.tv_nsec;
-            memcpy(dbt->bin->memory + tp_addr, &sec, 4);
-            memcpy(dbt->bin->memory + tp_addr + 4, &nsec, 4);
-            ctx->x[10] = 0;
+            memcpy(bin->memory + tp_addr, &sec, 4);
+            memcpy(bin->memory + tp_addr + 4, &nsec, 4);
+            x[10] = 0;
         }
         break;
 
     case 404: /* get_cpu_clock() — returns host clock() value */
-        ctx->x[10] = (uint32_t)clock();
+        x[10] = (uint32_t)clock();
         break;
 
     case 500: /* term_setraw(mode) — set terminal raw/cooked mode */
         {
-            int mode = (int)ctx->x[10];
+            int mode = (int)x[10];
             struct termios t;
             if (tcgetattr(STDIN_FILENO, &t) < 0) {
-                ctx->x[10] = (uint32_t)-1;
+                x[10] = (uint32_t)-1;
                 break;
             }
             if (mode) {
@@ -388,26 +417,26 @@ static int handle_ecall(dbt_state_t *dbt) {
                 t.c_oflag |= OPOST;
                 t.c_lflag |= ICANON | ECHO | ISIG | IEXTEN;
             }
-            ctx->x[10] = (tcsetattr(STDIN_FILENO, TCSAFLUSH, &t) == 0) ? 0 : (uint32_t)-1;
+            x[10] = (tcsetattr(STDIN_FILENO, TCSAFLUSH, &t) == 0) ? 0 : (uint32_t)-1;
         }
         break;
 
     case 501: /* term_getsize(buf) — get terminal dimensions */
         {
-            uint32_t buf_addr = ctx->x[10];
-            if (buf_addr + 8 > dbt->bin->memory_size) {
-                ctx->x[10] = (uint32_t)-1;
+            uint32_t buf_addr = x[10];
+            if (buf_addr + 8 > bin->memory_size) {
+                x[10] = (uint32_t)-1;
                 break;
             }
             struct winsize ws;
             if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
                 uint32_t rows = ws.ws_row;
                 uint32_t cols = ws.ws_col;
-                memcpy(dbt->bin->memory + buf_addr, &rows, 4);
-                memcpy(dbt->bin->memory + buf_addr + 4, &cols, 4);
-                ctx->x[10] = 0;
+                memcpy(bin->memory + buf_addr, &rows, 4);
+                memcpy(bin->memory + buf_addr + 4, &cols, 4);
+                x[10] = 0;
             } else {
-                ctx->x[10] = (uint32_t)-1;
+                x[10] = (uint32_t)-1;
             }
         }
         break;
@@ -418,13 +447,13 @@ static int handle_ecall(dbt_state_t *dbt) {
             pfd.fd = STDIN_FILENO;
             pfd.events = POLLIN;
             int ret = poll(&pfd, 1, 0);
-            ctx->x[10] = (ret > 0 && (pfd.revents & POLLIN)) ? 1 : 0;
+            x[10] = (ret > 0 && (pfd.revents & POLLIN)) ? 1 : 0;
         }
         break;
 
     default:
         fprintf(stderr, "rv32-run: unhandled ecall %u at PC=0x%08X\n",
-                syscall_num, ctx->next_pc - 4);
+                syscall_num, report_pc);
         return -1;
     }
 
@@ -520,7 +549,7 @@ int dbt_run(dbt_state_t *dbt) {
 
         if (pc & 1) {
             dbt->ctx.next_pc = pc & ~3u;
-            int rc = handle_ecall(dbt);
+            int rc = rv32_handle_ecall(dbt->ctx.x, dbt->bin, dbt->ctx.next_pc - 4);
             if (rc != -2) return rc;
             dbt->ctx.x[0] = 0;
             continue;

@@ -3,6 +3,7 @@
 /* Linux RISC-V syscall numbers */
 #define SYS_mkdirat  34
 #define SYS_fstatat  79
+#define SYS_fstat    80
 #define AT_FDCWD     -100
 
 static inline long ecall6(long n, long a0, long a1, long a2, long a3, long a4, long a5) {
@@ -24,8 +25,8 @@ int stat(const char *path, struct stat *buf) {
 }
 
 int fstat(int fd, struct stat *buf) {
-    /* ECALL 80 is our existing fstat stub; use fstatat with empty path instead */
-    return (int)ecall6(SYS_fstatat, fd, (long)"", (long)buf, 0x1000 /* AT_EMPTY_PATH */, 0, 0);
+    /* Direct host fstat via ECALL 80 (not AT_EMPTY_PATH — a Linuxism). */
+    return (int)ecall6(SYS_fstat, fd, (long)buf, 0, 0, 0, 0);
 }
 
 int mkdir(const char *pathname, mode_t mode) {
