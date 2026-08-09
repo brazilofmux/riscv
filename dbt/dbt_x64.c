@@ -1124,29 +1124,39 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
             return 0;
         }
 
-        case 0x18: /* FCVT.W.S/WU.S / FCVT.W.D/WU.D (float/double → int32) */
+        case 0x18: { /* FCVT.W.S/WU.S / FCVT.W.D/WU.D — soft convert via C helpers.
+                      * Host cvtt*ss2si returns the x86 indefinite (0x80000000)
+                      * on NaN/overflow and mis-handles FCVT.WU of negatives. */
+            void *fn;
             fp_rc_evict(e, fc, insn->rs1);
             if (fmt == 0) {
-                emit_load_fp_s(e, XMM0, insn->rs1);
-                if (insn->rs2 == 0) {
-                    /* FCVT.W.S — float → signed int32 (truncate) */
-                    emit_cvttss2si_r32(e, X64_RAX, XMM0);
-                } else {
-                    /* FCVT.WU.S — float → unsigned int32
-                     * Use 64-bit cvt to handle full unsigned range */
-                    emit_cvttss2si_r64(e, X64_RAX, XMM0);
-                }
+                emit_load_fp_s(e, XMM0, insn->rs1); /* float arg in XMM0 */
+                fn = (insn->rs2 == 0) ? (void *)rv32_fcvt_w_s : (void *)rv32_fcvt_wu_s;
             } else {
-                emit_load_fp_d(e, XMM0, insn->rs1);
-                if (insn->rs2 == 0) {
-                    emit_cvttsd2si_r32(e, X64_RAX, XMM0);
-                } else {
-                    emit_cvttsd2si_r64(e, X64_RAX, XMM0);
-                }
+                emit_load_fp_d(e, XMM0, insn->rs1); /* double arg in XMM0 */
+                fn = (insn->rs2 == 0) ? (void *)rv32_fcvt_w_d : (void *)rv32_fcvt_wu_d;
             }
+            /* Mid-block CALL: all integer cache slots are caller-saved on
+             * some regs; XMM cache is fully caller-saved. Flush + reinit. */
+            rc_flush(e, rc);
+            fp_rc_flush(e, fc);
+            rc_init(rc);
+            fp_rc_init(fc);
+            /* Align stack (trampoline leaves SP odd-8 relative to 16). */
+            emit_byte(e, rex(1, 0, 0, 0));
+            emit_byte(e, 0x83);
+            emit_byte(e, modrm(0x03, 5, X64_RSP));
+            emit_byte(e, 8);
+            emit_mov_r64_imm64(e, X64_RAX, (uint64_t)(uintptr_t)fn);
+            emit_call_rax(e);
+            emit_byte(e, rex(1, 0, 0, 0));
+            emit_byte(e, 0x83);
+            emit_byte(e, modrm(0x03, 0, X64_RSP));
+            emit_byte(e, 8);
             if (insn->rd)
                 rc_store(e, rc, insn->rd, X64_RAX);
             return 0;
+        }
 
         case 0x1A: /* FCVT.S.W/WU / FCVT.D.W/WU (int32 → float/double) */
             fp_rc_evict(e, fc, insn->rd);
@@ -1198,11 +1208,43 @@ static int translate_one(dbt_state_t *dbt __attribute__((unused)),
                 emit_u32(e, (uint32_t)off);
                 if (insn->rd)
                     rc_store(e, rc, insn->rd, X64_RAX);
-            } else {
-                /* FCLASS — complex bitmask, fall back to interpreter */
-                return -1;
+                return 0;
             }
-            return 0;
+            if (insn->funct3 == 1 && (fmt == 0 || fmt == 1)) {
+                /* FCLASS.S / FCLASS.D via shared helper. Flush first —
+                 * RDI is an integer-cache slot, so load the arg after. */
+                void *fn = (fmt == 0) ? (void *)rv32_fclass_s
+                                      : (void *)rv32_fclass_d;
+                int off = CTX_FP_OFF + insn->rs1 * 8;
+                rc_flush(e, rc);
+                fp_rc_flush(e, fc);
+                rc_init(rc);
+                fp_rc_init(fc);
+                if (fmt == 0) {
+                    emit_byte(e, 0x8B); /* mov edi, [rbx + off] */
+                    emit_byte(e, modrm(0x02, X64_RDI, X64_RBX));
+                    emit_u32(e, (uint32_t)off);
+                } else {
+                    emit_byte(e, rex(1, 0, 0, 0)); /* mov rdi, [rbx + off] */
+                    emit_byte(e, 0x8B);
+                    emit_byte(e, modrm(0x02, X64_RDI, X64_RBX));
+                    emit_u32(e, (uint32_t)off);
+                }
+                emit_byte(e, rex(1, 0, 0, 0));
+                emit_byte(e, 0x83);
+                emit_byte(e, modrm(0x03, 5, X64_RSP));
+                emit_byte(e, 8);
+                emit_mov_r64_imm64(e, X64_RAX, (uint64_t)(uintptr_t)fn);
+                emit_call_rax(e);
+                emit_byte(e, rex(1, 0, 0, 0));
+                emit_byte(e, 0x83);
+                emit_byte(e, modrm(0x03, 0, X64_RSP));
+                emit_byte(e, 8);
+                if (insn->rd)
+                    rc_store(e, rc, insn->rd, X64_RAX);
+                return 0;
+            }
+            return -1;
 
         case 0x1E: /* FMV.W.X */
             fp_rc_evict(e, fc, insn->rd);

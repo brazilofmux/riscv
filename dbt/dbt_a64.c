@@ -1038,18 +1038,31 @@ static int translate_one(emit_t *e, reg_cache_t *rc, fp_cache_t *fc,
             return 0;
         }
 
-        case 0x18: { /* FCVT.W.S / FCVT.WU.S / FCVT.W.D / FCVT.WU.D */
+        case 0x18: { /* FCVT.W.S / FCVT.WU.S / FCVT.W.D / FCVT.WU.D
+                      * Soft convert via C helpers — host fcvtzs/u disagree
+                      * with RISC-V on NaN (a64→0, RV→INT_MAX for signed)
+                      * and we keep one source of truth with interp/shadow. */
+            void *fn;
             if (fmt == 0) {
                 fp_rc_evict(e, fc, insn->rs1);
-                load_fp_s(e, 0, insn->rs1);
-                a64_reg_t rd = rc_write(e, rc, insn->rd);
-                if (insn->rs2 == 0) emit_fcvtzs_w32_s(e, rd, 0);
-                else                emit_fcvtzu_w32_s(e, rd, 0);
+                load_fp_s(e, 0, insn->rs1); /* S0 = float arg */
+                fn = (insn->rs2 == 0) ? (void *)rv32_fcvt_w_s : (void *)rv32_fcvt_wu_s;
             } else {
                 int src = fp_rc_read_d(e, fc, insn->rs1);
+                if (src != 0) emit_fmov_d_d(e, 0, src); /* D0 = double arg */
+                fn = (insn->rs2 == 0) ? (void *)rv32_fcvt_w_d : (void *)rv32_fcvt_wu_d;
+            }
+            /* Mid-block BLR: preserve LR (X30), flush/invalidate int cache
+             * (X15 is caller-saved). FP cache lives in D8-D15 (callee-saved). */
+            rc_flush(e, rc);
+            rc_init(rc);
+            emit_stp_pre_sp(e, A64_W29, A64_W30, -16);
+            emit_mov_x64_imm64(e, A64_W9, (uint64_t)(uintptr_t)fn);
+            emit_blr(e, A64_W9);
+            emit_ldp_post_sp(e, A64_W29, A64_W30, 16);
+            if (insn->rd) {
                 a64_reg_t rd = rc_write(e, rc, insn->rd);
-                if (insn->rs2 == 0) emit_fcvtzs_w32_d(e, rd, src);
-                else                emit_fcvtzu_w32_d(e, rd, src);
+                emit_mov_w32_w32(e, rd, A64_W0);
             }
             return 0;
         }
@@ -1084,14 +1097,39 @@ static int translate_one(emit_t *e, reg_cache_t *rc, fp_cache_t *fc,
             }
             return 0;
 
-        case 0x1C: /* FMV.X.W (fmt=0, funct3=0) — bitcast f[rs1] low 32 to int */
+        case 0x1C: /* FMV.X.W / FCLASS */
             if (fmt == 0 && insn->funct3 == 0) {
+                /* FMV.X.W — bitcast f[rs1] low 32 to int */
                 fp_rc_evict(e, fc, insn->rs1);
                 a64_reg_t rd = rc_write(e, rc, insn->rd);
                 emit_ldr_w32_imm(e, rd, A_CTX, FP_OFF(insn->rs1));
                 return 0;
             }
-            return -1;  /* FCLASS — interpreter fallback */
+            if (insn->funct3 == 1 && (fmt == 0 || fmt == 1)) {
+                /* FCLASS.S / FCLASS.D — soft classify via shared helper */
+                void *fn;
+                if (fmt == 0) {
+                    fp_rc_evict(e, fc, insn->rs1);
+                    emit_ldr_w32_imm(e, A64_W0, A_CTX, FP_OFF(insn->rs1));
+                    fn = (void *)rv32_fclass_s;
+                } else {
+                    int src = fp_rc_read_d(e, fc, insn->rs1);
+                    emit_fmov_x64_d(e, A64_W0, src); /* X0 = raw double bits */
+                    fn = (void *)rv32_fclass_d;
+                }
+                rc_flush(e, rc);
+                rc_init(rc);
+                emit_stp_pre_sp(e, A64_W29, A64_W30, -16);
+                emit_mov_x64_imm64(e, A64_W9, (uint64_t)(uintptr_t)fn);
+                emit_blr(e, A64_W9);
+                emit_ldp_post_sp(e, A64_W29, A64_W30, 16);
+                if (insn->rd) {
+                    a64_reg_t rd = rc_write(e, rc, insn->rd);
+                    emit_mov_w32_w32(e, rd, A64_W0);
+                }
+                return 0;
+            }
+            return -1;
 
         case 0x1E: /* FMV.W.X (fmt=0, funct3=0) — bitcast int rs1 → f[rd] (NaN-boxed) */
             if (fmt == 0 && insn->funct3 == 0) {

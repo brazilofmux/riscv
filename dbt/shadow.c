@@ -520,33 +520,19 @@ static step_result_t shadow_step(shadow_state_t *s) {
             break;
         }
         case 0x18: { /* FCVT.W{,U}.{S,D} */
-            int32_t r;
             if (fmt == 0) {
                 float a = fp_unbox_s(s->f[insn.rs1]);
-                if (insn.rs2 == 0) {
-                    if (isnan(a)) r = INT32_MAX;
-                    else if (a >= 2147483648.0f) r = INT32_MAX;
-                    else if (a < -2147483648.0f) r = INT32_MIN;
-                    else r = (int32_t)a;
-                } else {
-                    if (isnan(a) || a < 0.0f) r = 0;
-                    else if (a >= 4294967296.0f) r = (int32_t)UINT32_MAX;
-                    else r = (int32_t)(uint32_t)a;
+                if (insn.rd) {
+                    s->x[insn.rd] = (insn.rs2 == 0)
+                        ? rv32_fcvt_w_s(a) : rv32_fcvt_wu_s(a);
                 }
             } else {
                 double a = fp_unbox_d(s->f[insn.rs1]);
-                if (insn.rs2 == 0) {
-                    if (isnan(a)) r = INT32_MAX;
-                    else if (a >= 2147483648.0) r = INT32_MAX;
-                    else if (a < -2147483648.0) r = INT32_MIN;
-                    else r = (int32_t)a;
-                } else {
-                    if (isnan(a) || a < 0.0) r = 0;
-                    else if (a >= 4294967296.0) r = (int32_t)UINT32_MAX;
-                    else r = (int32_t)(uint32_t)a;
+                if (insn.rd) {
+                    s->x[insn.rd] = (insn.rs2 == 0)
+                        ? rv32_fcvt_w_d(a) : rv32_fcvt_wu_d(a);
                 }
             }
-            if (insn.rd) s->x[insn.rd] = (uint32_t)r;
             break;
         }
         case 0x1A: /* FCVT.{S,D}.W{,U} */
@@ -570,31 +556,13 @@ static step_result_t shadow_step(shadow_state_t *s) {
                     float a = fp_unbox_s(s->f[insn.rs1]);
                     uint32_t bits;
                     memcpy(&bits, &a, 4);
-                    uint32_t sign = bits >> 31;
-                    uint32_t exp = (bits >> 23) & 0xFF;
-                    uint32_t frac = bits & 0x7FFFFF;
-                    uint32_t cls = 0;
-                    if (exp == 0xFF && frac != 0)        cls = (frac & 0x400000) ? (1 << 9) : (1 << 8);
-                    else if (exp == 0xFF)                cls = sign ? (1 << 0) : (1 << 7);
-                    else if (exp == 0 && frac == 0)      cls = sign ? (1 << 3) : (1 << 4);
-                    else if (exp == 0)                   cls = sign ? (1 << 2) : (1 << 5);
-                    else                                 cls = sign ? (1 << 1) : (1 << 6);
-                    if (insn.rd) s->x[insn.rd] = cls;
+                    if (insn.rd) s->x[insn.rd] = rv32_fclass_s(bits);
                 }
             } else if (fmt == 1 && insn.funct3 == 1) {
                 double a = fp_unbox_d(s->f[insn.rs1]);
                 uint64_t bits;
                 memcpy(&bits, &a, 8);
-                uint32_t sign = (uint32_t)(bits >> 63);
-                uint32_t exp = (uint32_t)((bits >> 52) & 0x7FF);
-                uint64_t frac = bits & 0xFFFFFFFFFFFFFULL;
-                uint32_t cls = 0;
-                if (exp == 0x7FF && frac != 0)         cls = (frac & 0x8000000000000ULL) ? (1 << 9) : (1 << 8);
-                else if (exp == 0x7FF)                 cls = sign ? (1 << 0) : (1 << 7);
-                else if (exp == 0 && frac == 0)        cls = sign ? (1 << 3) : (1 << 4);
-                else if (exp == 0)                     cls = sign ? (1 << 2) : (1 << 5);
-                else                                   cls = sign ? (1 << 1) : (1 << 6);
-                if (insn.rd) s->x[insn.rd] = cls;
+                if (insn.rd) s->x[insn.rd] = rv32_fclass_d(bits);
             }
             break;
         case 0x1E:

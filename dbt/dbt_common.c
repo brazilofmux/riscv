@@ -26,6 +26,8 @@
 #include <math.h>
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
+#include <stdint.h>
 
 /* The guest is compiled with Linux O_* bit values (see runtime/include/
  * fcntl.h). On Linux hosts these match the kernel's; on macOS they
@@ -84,6 +86,64 @@ const libm_info_t libm_table[LIBM_COUNT] = {
     [LIBM_ATAN2] = {"atan2", (void*)atan2, 1},
     [LIBM_FMOD]  = {"fmod",  (void*)fmod,  1},
 };
+
+/* ---- Soft FP: FCLASS / FCVT.W* (shared by interp, shadow, JIT) ---- */
+
+uint32_t rv32_fclass_s(uint32_t bits) {
+    uint32_t sign = bits >> 31;
+    uint32_t exp  = (bits >> 23) & 0xFFu;
+    uint32_t frac = bits & 0x7FFFFFu;
+    if (exp == 0xFFu && frac != 0)
+        return (frac & 0x400000u) ? (1u << 9) : (1u << 8); /* qNaN : sNaN */
+    if (exp == 0xFFu)
+        return sign ? (1u << 0) : (1u << 7); /* -inf : +inf */
+    if (exp == 0 && frac == 0)
+        return sign ? (1u << 3) : (1u << 4); /* -0 : +0 */
+    if (exp == 0)
+        return sign ? (1u << 2) : (1u << 5); /* -sub : +sub */
+    return sign ? (1u << 1) : (1u << 6);     /* -norm : +norm */
+}
+
+uint32_t rv32_fclass_d(uint64_t bits) {
+    uint32_t sign = (uint32_t)(bits >> 63);
+    uint32_t exp  = (uint32_t)((bits >> 52) & 0x7FFu);
+    uint64_t frac = bits & 0xFFFFFFFFFFFFFULL;
+    if (exp == 0x7FFu && frac != 0)
+        return (frac & 0x8000000000000ULL) ? (1u << 9) : (1u << 8);
+    if (exp == 0x7FFu)
+        return sign ? (1u << 0) : (1u << 7);
+    if (exp == 0 && frac == 0)
+        return sign ? (1u << 3) : (1u << 4);
+    if (exp == 0)
+        return sign ? (1u << 2) : (1u << 5);
+    return sign ? (1u << 1) : (1u << 6);
+}
+
+uint32_t rv32_fcvt_w_s(float a) {
+    if (isnan(a)) return (uint32_t)INT32_MAX;
+    if (a >= 2147483648.0f) return (uint32_t)INT32_MAX;
+    if (a < -2147483648.0f) return (uint32_t)INT32_MIN;
+    return (uint32_t)(int32_t)a;
+}
+
+uint32_t rv32_fcvt_wu_s(float a) {
+    if (isnan(a) || a < 0.0f) return 0;
+    if (a >= 4294967296.0f) return UINT32_MAX;
+    return (uint32_t)a;
+}
+
+uint32_t rv32_fcvt_w_d(double a) {
+    if (isnan(a)) return (uint32_t)INT32_MAX;
+    if (a >= 2147483648.0) return (uint32_t)INT32_MAX;
+    if (a < -2147483648.0) return (uint32_t)INT32_MIN;
+    return (uint32_t)(int32_t)a;
+}
+
+uint32_t rv32_fcvt_wu_d(double a) {
+    if (isnan(a) || a < 0.0) return 0;
+    if (a >= 4294967296.0) return UINT32_MAX;
+    return (uint32_t)a;
+}
 
 /* ---- Block cache ---- */
 

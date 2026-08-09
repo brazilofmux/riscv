@@ -158,6 +158,16 @@ void dbt_cleanup(dbt_state_t *dbt);
  * used in error messages. */
 int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc);
 
+/* Soft FP helpers matching RISC-V FCLASS / FCVT.W{,U}.{S,D} (rtz).
+ * Used by the interpreter, shadow verifier, and both JIT backends so
+ * host-native convert quirks (x86 indefinite, a64 NaN→0) cannot diverge. */
+uint32_t rv32_fclass_s(uint32_t bits);
+uint32_t rv32_fclass_d(uint64_t bits);
+uint32_t rv32_fcvt_w_s(float a);
+uint32_t rv32_fcvt_wu_s(float a);
+uint32_t rv32_fcvt_w_d(double a);
+uint32_t rv32_fcvt_wu_d(double a);
+
 /* ---- Arch-specific hooks (provided by dbt_x64.c or dbt_a64.c) ----
  *
  * dbt_translate_block: translate the guest block starting at guest_pc and

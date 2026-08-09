@@ -36,8 +36,9 @@ merge, and LUI+JALR/LOAD/STORE fusion all regressed when ported. Still open:
 | A (atomics) | Not needed for single-threaded micro profile |
 | C (compressed) | Not supported — decoder is fixed 4-byte; ELF rejects RVC |
 
-FCLASS is unimplemented in both JITs (exits with EBREAK). Soft FP edge cases
-(FCVT saturate, FMIN/FMAX NaN/-0) still diverge slightly host-native vs interp.
+FCLASS and FCVT.W{,U}.{S,D} use shared soft helpers in both JITs (see
+`rv32_fclass_*` / `rv32_fcvt_*` in `dbt_common.c`). Soft FP edge cases that
+still diverge host-native vs interp: FMIN/FMAX NaN/-0.
 
 ## Runtime / ECALL
 
