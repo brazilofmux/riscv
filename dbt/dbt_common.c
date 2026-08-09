@@ -211,7 +211,7 @@ int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc) {
             uint32_t fd  = x[10];
             uint32_t buf = x[11];
             uint32_t len = x[12];
-            if (buf + len > bin->memory_size) {
+            if (buf > bin->memory_size || len > bin->memory_size - buf) {
                 x[10] = (uint32_t)-1;
                 break;
             }
@@ -225,7 +225,7 @@ int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc) {
             uint32_t fd  = x[10];
             uint32_t buf = x[11];
             uint32_t len = x[12];
-            if (buf + len > bin->memory_size) {
+            if (buf > bin->memory_size || len > bin->memory_size - buf) {
                 x[10] = (uint32_t)-1;
                 break;
             }
@@ -310,7 +310,7 @@ int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc) {
             const char *pathname = guest_c_string(bin, x[11]);
             uint32_t buf_addr = x[12];
             int flags = (int)x[13];
-            if (!pathname || buf_addr + 80 > bin->memory_size) {
+            if (!pathname || buf_addr > bin->memory_size - 80) {
                 x[10] = (uint32_t)-1;
                 break;
             }
@@ -327,7 +327,7 @@ int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc) {
         {
             int fd = (int)x[10];
             uint32_t buf_addr = x[11];
-            if (buf_addr + 80 > bin->memory_size) {
+            if (buf_addr > bin->memory_size - 80) {
                 x[10] = (uint32_t)-1;
                 break;
             }
@@ -366,7 +366,7 @@ int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc) {
             int slot = (int)(int32_t)x[10];
             uint32_t buf_addr = x[11];
             if (slot < 0 || slot >= DBT_DIR_TABLE_SIZE || !g_dir_table[slot]
-                || buf_addr + 272 > bin->memory_size) {
+                || buf_addr > bin->memory_size - 272) {
                 x[10] = (uint32_t)-1;
                 break;
             }
@@ -412,7 +412,7 @@ int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc) {
         {
             uint32_t req_addr = x[10];
             uint32_t rem_addr = x[11];
-            if (req_addr + 8 > bin->memory_size) {
+            if (req_addr > bin->memory_size - 8) {
                 x[10] = (uint32_t)-1;
                 break;
             }
@@ -422,7 +422,7 @@ int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc) {
             struct timespec req = { (time_t)s32, (long)ns32 };
             struct timespec rem = { 0, 0 };
             int rc = nanosleep(&req, &rem);
-            if (rem_addr && rem_addr + 8 <= bin->memory_size) {
+            if (rem_addr && rem_addr <= bin->memory_size - 8) {
                 uint32_t rs = (uint32_t)rem.tv_sec;
                 uint32_t rn = (uint32_t)rem.tv_nsec;
                 memcpy(bin->memory + rem_addr,     &rs, 4);
@@ -439,7 +439,7 @@ int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc) {
     case 403: /* clock_gettime(clockid, tp_addr) — clockid ignored */
         {
             uint32_t tp_addr = x[11];
-            if (tp_addr + 8 > bin->memory_size) {
+            if (tp_addr > bin->memory_size - 8) {
                 x[10] = (uint32_t)-1;
                 break;
             }
@@ -484,7 +484,7 @@ int rv32_handle_ecall(uint32_t *x, rv32_binary_t *bin, uint32_t report_pc) {
     case 501: /* term_getsize(buf) — get terminal dimensions */
         {
             uint32_t buf_addr = x[10];
-            if (buf_addr + 8 > bin->memory_size) {
+            if (buf_addr > bin->memory_size - 8) {
                 x[10] = (uint32_t)-1;
                 break;
             }
