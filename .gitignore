@@ -2,3 +2,6 @@
 *.elf
 *.a
 rv32-run
+
+# mdfix -i backups
+*.bak
