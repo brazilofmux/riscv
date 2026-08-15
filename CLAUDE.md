@@ -17,6 +17,7 @@ This project is a spiritual successor to the SLOW-32 project at `~/slow-32`. All
 ## Architecture
 
 ### Memory Model
+
 - Single flat address space (no MMU, no privilege modes)
 - Code: 0x10000, up to 1 MB. Data: 0x80000, up to 16 MB
 - Stack grows down from top of data region (0x0FFFFFF0)
@@ -51,12 +52,14 @@ Guest programs invoke host services through the RISC-V `ecall` instruction using
 
 ### Binary Validation
 The DBT accepts standard RV32IMFD ELF binaries but validates:
+
 - Must be ELF32, little-endian, machine EM_RISCV
 - Must be RV32 (ELF flags)
 - No privileged instructions (CSR used only for fcsr/fflags/frm, ECALL/EBREAK for service calls)
 - No atomics (A extension) unless we choose to support them later
 
 ### DBT Pipeline
+
 1. **ELF Loader** (`elf_loader.c`) — parse ELF, map segments, validate RV32IM, extract symbol table
 2. **Decoder** (`decoder.h`) — inline RV32IM instruction decoder
 3. **Translator** (`dbt.c`) — guest-to-host code generation with:
@@ -74,6 +77,7 @@ The DBT accepts standard RV32IMFD ELF binaries but validates:
 
 ### Host Register Convention
 **x86-64 backend (`dbt_x64.c`, full optimizations):**
+
 - RBX = pointer to `rv32_ctx_t` (guest register file)
 - R12 = guest memory base pointer
 - R13 = block cache base pointer
@@ -81,6 +85,7 @@ The DBT accepts standard RV32IMFD ELF binaries but validates:
 - RSI, RDI, R8-R11, R14, R15 = register cache slots
 
 **AArch64 backend (`dbt_a64.c`, baseline + chaining + intrinsics + LUI/AUIPC fusion + register cache):**
+
 - X19 = pointer to `rv32_ctx_t`
 - X20 = guest memory base pointer
 - X21 = block cache base pointer
@@ -99,6 +104,7 @@ init/cleanup). The Makefile picks the right per-arch translator via
 ## RV32IMFD Quick Reference
 
 ### Integer Registers (32 x 32-bit)
+
 - x0 = zero (hardwired)
 - x1 = ra (return address)
 - x2 = sp (stack pointer)
@@ -113,6 +119,7 @@ init/cleanup). The Makefile picks the right per-arch translator via
 - x28-x31 = t3-t6 (temporaries)
 
 ### FP Registers (32 x 64-bit, NaN-boxed for single-precision)
+
 - f0-f7 = ft0-ft7 (FP temporaries)
 - f8-f9 = fs0-fs1 (FP callee-saved)
 - f10-f11 = fa0-fa1 (FP args/return values)
@@ -121,6 +128,7 @@ init/cleanup). The Makefile picks the right per-arch translator via
 - f28-f31 = ft8-ft11 (FP temporaries)
 
 ### Instruction Formats
+
 - R-type: register-register (ADD, SUB, MUL, DIV, etc.)
 - I-type: register-immediate (ADDI, LW, JALR, etc.)
 - S-type: store (SW, SH, SB)
@@ -129,6 +137,7 @@ init/cleanup). The Makefile picks the right per-arch translator via
 - J-type: jump (JAL)
 
 ### Key Differences from SLOW-32
+
 - 6 branch types (vs SLOW-32's BEQ/BNE only) — comparisons are in the branch itself
 - No separate comparison instructions (no SEQ/SNE/SGT etc.)
 - AUIPC (add upper immediate to PC) — enables PC-relative addressing
@@ -381,6 +390,7 @@ touching runtime/ or the ECALL layer. The .elf files are gitignored.
       Tried and reverted (regressed on this
       host — chained-exit is already too cheap for the optimizations
       to pay off): RAS, diamond merge, LUI+JALR/LOAD/STORE fusion.
+
 - [x] Lockstep shadow-interpreter verifier (`-V`, `shadow.c`/`shadow.h`):
       runs a pure-C interpreter on every block from a pre-block snapshot,
       captures stores in a shadow buffer, then compares regs/PC/FP/stores

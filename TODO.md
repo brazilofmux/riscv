@@ -17,12 +17,14 @@ merge, and LUI+JALR/LOAD/STORE fusion all regressed when ported. Still open:
   stubs (much larger change than the software RAS that was reverted).
 
 ### x86-64
+
 - **Register cache expansion**: 8-slot LRU is the main bottleneck on
   register-heavy loops; no free GPRs left without XMM tricks.
 - **Peephole pass** (never implemented): redundant mov elimination, lea fold,
   strength-reduce imul-by-power-of-2, dead guest-reg stores before block exit.
 
 ### Profiling
+
 - Optional per-PC block counters for hot-loop reporting / PGO.
 - Optional guest instruction counter in DBT mode (today only the interpreter
   prints icount via `-s`; BIPS numerators should quote `-i -s`).
@@ -43,6 +45,7 @@ still diverge host-native vs interp: FMIN/FMAX NaN/-0.
 ## Runtime / ECALL
 
 Done recently:
+
 - Shared `rv32_handle_ecall` for JIT + interpreter (open flags, AT_FDCWD,
   dirops, nanosleep, fstat).
 - Real `fstat` (ECALL 80) + richer `struct stat` marshal (ino/mode/size/times).

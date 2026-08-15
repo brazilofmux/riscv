@@ -19,6 +19,7 @@ Keep generated artifacts (`*.o`, `*.elf`, `*.a`, `rv32-run`) out of version
 control (see `.gitignore`). Rebuild ported ELFs after runtime/ECALL changes.
 
 ## Build, Test, and Development Commands
+
 - `make` or `make -C dbt`: build `dbt/rv32-run` (arch picked via `uname -m`).
 - `make -C runtime`: build guest `crt0.o` + `libc.a`.
 - `make test`: core runtime suite (`tests/run-tests.sh`).
@@ -47,6 +48,7 @@ C11-style, warning-clean with existing flags (`-Wall -Wextra -O2 -g`).
 - Pair new modules with matching headers; keep decode/emit helpers small.
 
 ## Testing Guidelines
+
 1. `make -C dbt && make -C runtime && make test`
 2. Smoke: `./dbt/rv32-run examples/benchmark_core.elf` (and `-i` for ECALL parity).
 3. For JIT correctness sweeps: `./dbt/rv32-run -V <elf>` (forces unchained blocks).
